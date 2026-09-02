@@ -1,6 +1,51 @@
+import { useState } from "react";
 import "../styles/ble-verification.css";
 
 function BleVerification({ className, onVerified }) {
+  const [status, setStatus] = useState("ready");
+
+  const startVerification = () => {
+    setStatus("scanning");
+
+    setTimeout(() => {
+      setStatus("checking");
+    }, 2000);
+
+    setTimeout(() => {
+      setStatus("verified");
+    }, 4000);
+  };
+
+  const getStatusContent = () => {
+    switch (status) {
+      case "scanning":
+        return {
+          message: "Scanning for classroom device...",
+          className: "scanning",
+        };
+
+      case "checking":
+        return {
+          message: "Checking proximity...",
+          className: "checking",
+        };
+
+      case "verified":
+        return {
+          message: "Proximity verified",
+          className: "verified",
+        };
+
+      default:
+        return {
+          message: "Waiting to check proximity",
+          className: "ready",
+        };
+    }
+  };
+
+  const statusContent = getStatusContent();
+
   return (
     <main className="ble-page">
       <section className="ble-card">
@@ -13,17 +58,35 @@ function BleVerification({ className, onVerified }) {
           in the classroom before marking attendance.
         </p>
 
-        <div className="ble-status">
+        <div className={`ble-status ${statusContent.className}`}>
           <span className="status-dot"></span>
-          <span>Waiting to check proximity</span>
+          <span>{statusContent.message}</span>
         </div>
 
-        <button
-          className="ble-button"
-          onClick={onVerified}
-        >
-          Start Verification
-        </button>
+        {status === "ready" && (
+          <button
+            className="ble-button"
+            onClick={startVerification}
+          >
+            Start Verification
+          </button>
+        )}
+
+        {(status === "scanning" || status === "checking") && (
+          <div className="ble-progress">
+            <div className="progress-bar"></div>
+            <p>Please stay near the classroom.</p>
+          </div>
+        )}
+
+        {status === "verified" && (
+          <button
+            className="ble-button"
+            onClick={onVerified}
+          >
+            Continue to Face Verification
+          </button>
+        )}
 
         <p className="ble-class">
           Class: <strong>{className}</strong>
@@ -34,4 +97,5 @@ function BleVerification({ className, onVerified }) {
 }
 
 export default BleVerification;
+
 

@@ -72,4 +72,75 @@
   color: #6b7280;
 }
 
+.ble-status.scanning,
+.ble-status.checking {
+  background: #eff6ff;
+}
+
+.ble-status.verified {
+  background: #ecfdf5;
+  color: #166534;
+}
+
+.ble-status.verified .status-dot {
+  background: #22c55e;
+}
+
+.ble-status.scanning .status-dot,
+.ble-status.checking .status-dot {
+  background: #3b82f6;
+  animation: pulse 1s infinite;
+}
+
+.ble-progress {
+  margin-bottom: 20px;
+}
+
+.progress-bar {
+  height: 8px;
+  background: #e5e7eb;
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.progress-bar::before {
+  content: "";
+  display: block;
+  width: 50%;
+  height: 100%;
+  background: #3b82f6;
+  border-radius: 10px;
+  animation: progress 2s infinite;
+}
+
+.ble-progress p {
+  color: #6b7280;
+  font-size: 14px;
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.4;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes progress {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(200%);
+  }
+}
+
 
