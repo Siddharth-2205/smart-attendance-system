@@ -1,7 +1,7 @@
 import { useState } from "react";
 import "../styles/login.css";
 
-function Login() {
+function Login({ onLogin }) {
   const [studentId, setStudentId] = useState("");
   const [error, setError] = useState("");
 
@@ -16,6 +16,7 @@ function Login() {
     setError("");
 
     console.log("Student ID:", studentId);
+    onLogin();
   };
 
   return (
