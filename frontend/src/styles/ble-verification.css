@@ -1,0 +1,75 @@
+.ble-page {
+  min-height: 100vh;
+  background: #f4f7fb;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+}
+
+.ble-card {
+  width: 100%;
+  max-width: 500px;
+  background: white;
+  padding: 40px;
+  border-radius: 16px;
+  text-align: center;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+}
+
+.ble-icon {
+  font-size: 48px;
+  margin-bottom: 20px;
+}
+
+.ble-card h1 {
+  font-size: 28px;
+  margin-bottom: 12px;
+}
+
+.ble-description {
+  color: #6b7280;
+  line-height: 1.6;
+  margin-bottom: 28px;
+}
+
+.ble-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px;
+  background: #f3f4f6;
+  border-radius: 10px;
+  margin-bottom: 24px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.ble-button {
+  width: 100%;
+  padding: 13px;
+  border: none;
+  border-radius: 8px;
+  background: #111827;
+  color: white;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.ble-button:hover {
+  opacity: 0.9;
+}
+
+.ble-class {
+  margin-top: 20px;
+  font-size: 14px;
+  color: #6b7280;
+}
+
+

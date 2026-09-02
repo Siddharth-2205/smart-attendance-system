@@ -1,6 +1,6 @@
 import "../styles/dashboard.css";
 
-function Dashboard({ studentId }) {
+function Dashboard({ studentId, onAttendance }) {
   return (
     <main className="dashboard-page">
       <section className="dashboard-container">
@@ -45,7 +45,9 @@ function Dashboard({ studentId }) {
                 <p>10:00 AM – 11:00 AM</p>
               </div>
 
-              <button>Mark Attendance</button>
+              <button onClick={() => onAttendance("Computer Networks")}>
+                    Mark Attendance
+              </button>
             </article>
 
             <article className="class-card">
@@ -54,7 +56,9 @@ function Dashboard({ studentId }) {
                 <p>2:00 PM – 3:00 PM</p>
               </div>
 
-              <button>Mark Attendance</button>
+              <button onClick={() => onAttendance("Information Retrieval")}>
+                Mark Attendance
+              </button>
             </article>
 
           </div>
