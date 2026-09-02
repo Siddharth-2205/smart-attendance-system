@@ -1,6 +1,6 @@
 import "../styles/dashboard.css";
 
-function Dashboard() {
+function Dashboard({ studentId }) {
   return (
     <main className="dashboard-page">
       <section className="dashboard-container">
@@ -13,7 +13,7 @@ function Dashboard() {
 
           <div className="student-info">
             <span>Student</span>
-            <strong>24BCS001</strong>
+            <strong>{studentId}</strong>
           </div>
         </header>
 

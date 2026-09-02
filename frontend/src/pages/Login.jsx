@@ -16,7 +16,7 @@ function Login({ onLogin }) {
     setError("");
 
     console.log("Student ID:", studentId);
-    onLogin();
+    onLogin(studentId.trim());
   };
 
   return (

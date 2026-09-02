@@ -3,15 +3,18 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 
 function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [studentId, setStudentId] = useState("");
 
-  return isLoggedIn ? (
-    <Dashboard />
+  const handleLogin = (id) => {
+    setStudentId(id);
+  };
+
+  return studentId ? (
+    <Dashboard studentId={studentId} />
   ) : (
-    <Login onLogin={() => setIsLoggedIn(true)} />
+    <Login onLogin={handleLogin} />
   );
 }
 
 export default App;
-
 
