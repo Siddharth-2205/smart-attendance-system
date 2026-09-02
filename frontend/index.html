@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Dynamic Attendance QR</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin-top: 40px;
+        }
+
+        #qrcode {
+            margin: 20px auto;
+            width: 250px;
+        }
+
+        .info {
+            margin: 10px;
+        }
+
+        #countdown {
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        #status {
+            color: green;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>Smart Attendance System</h1>
+
+    <h2>Dynamic QR Code</h2>
+
+    <div class="info">
+        <strong>Session ID:</strong>
+        <span id="session-display"></span>
+    </div>
+
+    <div id="qrcode"></div>
+
+    <div class="info">
+        <strong>Current Token:</strong>
+        <span id="token-display"></span>
+    </div>
+
+    <div class="info">
+        <strong>New QR in:</strong>
+        <span id="countdown">5</span>
+        seconds
+    </div>
+
+    <div class="info">
+        <strong>Status:</strong>
+        <span id="status">ACTIVE</span>
+    </div>
+
+    <script src="qrcode.min.js"></script>
+
+    <script>
+
+        // ==========================================
+        // 1. CREATE ONE ATTENDANCE SESSION
+        // ==========================================
+
+        const sessionId = "CS101-001";
+
+        document.getElementById("session-display").textContent = sessionId;
+
+
+        // ==========================================
+        // 2. GENERATE RANDOM TOKEN
+        // ==========================================
+
+        function generateToken() {
+            return crypto.randomUUID();
+        }
+
+
+        // ==========================================
+        // 3. GENERATE QR CODE
+        // ==========================================
+
+        function generateQR() {
+
+            // Create a NEW token
+            const token = generateToken();
+
+            // Data stored inside QR
+            const issuedAt = new Date();
+            const expiresAt = new Date(issuedAt.getTime() + 5000);
+
+            const qrPayload = {
+            sessionId: sessionId,
+            token: token,
+            issuedAt: issuedAt.toISOString(),
+    expiresAt: expiresAt.toISOString()
+};
+
+            // Remove previous QR
+            document.getElementById("qrcode").innerHTML = "";
+
+            // Create new QR
+            new QRCode(
+                document.getElementById("qrcode"),
+                {
+                    text: JSON.stringify(qrPayload),
+                    width: 250,
+                    height: 250
+                }
+            );
+
+            // Show token on screen
+            document.getElementById("token-display").textContent = token;
+
+            console.log("New QR generated:", qrPayload);
+        }
+
+
+        // ==========================================
+        // 4. COUNTDOWN
+        // ==========================================
+
+        let countdown = 5;
+
+        document.getElementById("countdown").textContent = countdown;
+
+
+        // Generate first QR immediately
+        generateQR();
+
+
+        // ==========================================
+        // 5. CHANGE QR EVERY 5 SECONDS
+        // ==========================================
+
+        setInterval(function () {
+
+            countdown--;
+
+            document.getElementById("countdown").textContent = countdown;
+
+
+            // When countdown reaches 0
+            if (countdown === 0) {
+
+                // Generate new QR
+                generateQR();
+
+                // Reset countdown
+                countdown = 5;
+
+                document.getElementById("countdown").textContent = countdown;
+            }
+
+        }, 1000);
+
+    </script>
+
+</body>
+</html>
