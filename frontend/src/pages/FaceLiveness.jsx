@@ -4,13 +4,19 @@ import "../styles/face-liveness.css";
 function FaceLiveness({ className, onVerified }) {
   const videoRef = useRef(null);
   const verificationTimers = useRef([]);
+  const hasCompletedRef = useRef(false);
 
   const [cameraStatus, setCameraStatus] = useState("requesting");
   const [verificationStatus, setVerificationStatus] = useState("ready");
   const [error, setError] = useState("");
 
+  // ==========================================
+  // START CAMERA
+  // ==========================================
+
   useEffect(() => {
     let stream;
+    let mounted = true;
 
     const startCamera = async () => {
       try {
@@ -18,10 +24,21 @@ function FaceLiveness({ className, onVerified }) {
           throw new Error("Camera API is not supported.");
         }
 
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false,
-        });
+        const cameraStream =
+          await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: "user",
+            },
+            audio: false,
+          });
+
+        // Stop the stream if the component has already unmounted.
+        if (!mounted) {
+          cameraStream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        stream = cameraStream;
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -31,39 +48,71 @@ function FaceLiveness({ className, onVerified }) {
       } catch (err) {
         console.error("Camera access error:", err);
 
-        setCameraStatus("error");
-        setError(
-          "Camera access is required for face verification."
-        );
+        if (mounted) {
+          setCameraStatus("error");
+          setError(
+            "Camera access is required for face verification. " +
+              "Please allow camera permissions and try again."
+          );
+        }
       }
     };
 
     startCamera();
 
     return () => {
+      mounted = false;
+
+      // Stop camera tracks when leaving the page.
       if (stream) {
         stream.getTracks().forEach((track) => track.stop());
       }
 
+      // Clear any pending verification timers.
       verificationTimers.current.forEach((timer) => {
         clearTimeout(timer);
       });
+
+      verificationTimers.current = [];
     };
   }, []);
 
-  const startFaceVerification = () => {
-    setVerificationStatus("verifying");
+  // ==========================================
+  // START FACE VERIFICATION
+  // ==========================================
 
-    // Temporary simulation.
-    // This will later be replaced by the actual
-    // face liveness detection result.
+  const startFaceVerification = () => {
+    if (
+      cameraStatus !== "ready" ||
+      verificationStatus !== "ready" ||
+      hasCompletedRef.current
+    ) {
+      return;
+    }
+
+    setVerificationStatus("verifying");
+    setError("");
+
+    // IMPORTANT:
+    // This is a temporary simulation.
+    // Actual face-liveness detection has not been implemented.
 
     const verificationTimer = setTimeout(() => {
       setVerificationStatus("verified");
     }, 3000);
 
     const completionTimer = setTimeout(() => {
-      onVerified();
+      if (hasCompletedRef.current) {
+        return;
+      }
+
+      hasCompletedRef.current = true;
+
+      // Notify App.jsx that the face verification step is complete.
+      // App.jsx should navigate to the Dynamic QR Verification page.
+      if (typeof onVerified === "function") {
+        onVerified();
+      }
     }, 4500);
 
     verificationTimers.current.push(
@@ -72,17 +121,19 @@ function FaceLiveness({ className, onVerified }) {
     );
   };
 
+  // ==========================================
+  // RENDER
+  // ==========================================
+
   return (
     <main className={`face-page ${className || ""}`}>
       <section className="face-card">
 
-        {/* =========================================
-            HEADER
-        ========================================== */}
+        {/* HEADER */}
 
         <header className="face-header">
-
           <div className="face-header-top">
+
             <div className="face-icon">
               <svg
                 viewBox="0 0 24 24"
@@ -136,7 +187,7 @@ function FaceLiveness({ className, onVerified }) {
 
             <div>
               <span className="face-eyebrow">
-                STEP 2 OF 2
+                STEP 2 OF 3
               </span>
 
               <h1>Verify Your Identity</h1>
@@ -146,14 +197,11 @@ function FaceLiveness({ className, onVerified }) {
                 you are physically present.
               </p>
             </div>
-          </div>
 
+          </div>
         </header>
 
-
-        {/* =========================================
-            CAMERA
-        ========================================== */}
+        {/* CAMERA */}
 
         <div
           className={`camera-container ${
@@ -166,7 +214,6 @@ function FaceLiveness({ className, onVerified }) {
               : ""
           }`}
         >
-
           <video
             ref={videoRef}
             autoPlay
@@ -176,9 +223,9 @@ function FaceLiveness({ className, onVerified }) {
           />
 
           {/* Camera loading */}
+
           {cameraStatus === "requesting" && (
             <div className="camera-message">
-
               <div className="camera-loader"></div>
 
               <strong>
@@ -188,15 +235,13 @@ function FaceLiveness({ className, onVerified }) {
               <span>
                 Please allow camera access to continue.
               </span>
-
             </div>
           )}
 
-
           {/* Camera error */}
+
           {cameraStatus === "error" && (
             <div className="camera-message error">
-
               <div className="camera-error-icon">
                 !
               </div>
@@ -208,23 +253,20 @@ function FaceLiveness({ className, onVerified }) {
               <span>
                 {error}
               </span>
-
             </div>
           )}
 
+          {/* Face scanning animation */}
 
-          {/* Face frame */}
           {verificationStatus === "verifying" && (
             <>
               <div className="face-frame">
-
                 <span className="frame-corner top-left"></span>
                 <span className="frame-corner top-right"></span>
                 <span className="frame-corner bottom-left"></span>
                 <span className="frame-corner bottom-right"></span>
 
                 <div className="face-scan-line"></div>
-
               </div>
 
               <div className="camera-live-badge">
@@ -238,11 +280,10 @@ function FaceLiveness({ className, onVerified }) {
             </>
           )}
 
+          {/* Verification success overlay */}
 
-          {/* Verified overlay */}
           {verificationStatus === "verified" && (
             <div className="verification-overlay">
-
               <div className="success-icon">
                 ✓
               </div>
@@ -254,22 +295,15 @@ function FaceLiveness({ className, onVerified }) {
               <span>
                 Identity check successful
               </span>
-
             </div>
           )}
-
         </div>
 
-
-        {/* =========================================
-            READY STATE
-        ========================================== */}
+        {/* READY STATE */}
 
         {verificationStatus === "ready" && (
           <>
-
             <div className="face-status ready">
-
               <div className="status-dot"></div>
 
               <div>
@@ -281,9 +315,7 @@ function FaceLiveness({ className, onVerified }) {
                   Position your face inside the camera frame.
                 </span>
               </div>
-
             </div>
-
 
             <div className="face-instructions">
 
@@ -303,7 +335,6 @@ function FaceLiveness({ className, onVerified }) {
                 </div>
               </div>
 
-
               <div className="instruction-item">
                 <span className="instruction-check">
                   ✓
@@ -319,7 +350,6 @@ function FaceLiveness({ className, onVerified }) {
                   </span>
                 </div>
               </div>
-
 
               <div className="instruction-item">
                 <span className="instruction-check">
@@ -339,11 +369,14 @@ function FaceLiveness({ className, onVerified }) {
 
             </div>
 
+            {/* Start button */}
 
             {cameraStatus === "ready" && (
               <button
+                type="button"
                 className="face-button"
                 onClick={startFaceVerification}
+                disabled={hasCompletedRef.current}
               >
                 <span>
                   Start Face Verification
@@ -354,18 +387,13 @@ function FaceLiveness({ className, onVerified }) {
                 </span>
               </button>
             )}
-
           </>
         )}
 
-
-        {/* =========================================
-            VERIFYING STATE
-        ========================================== */}
+        {/* VERIFYING STATE */}
 
         {verificationStatus === "verifying" && (
           <div className="verification-status">
-
             <div className="verification-status-header">
 
               <div className="verification-spinner">
@@ -384,9 +412,7 @@ function FaceLiveness({ className, onVerified }) {
 
             </div>
 
-
             <div className="verification-progress">
-
               <div className="verification-progress-header">
                 <span>
                   Liveness detection
@@ -400,51 +426,39 @@ function FaceLiveness({ className, onVerified }) {
               <div className="verification-progress-track">
                 <div className="verification-progress-fill"></div>
               </div>
-
             </div>
-
           </div>
         )}
 
-
-        {/* =========================================
-            VERIFIED STATE
-        ========================================== */}
+        {/* VERIFIED STATE */}
 
         {verificationStatus === "verified" && (
           <div className="verification-status success">
-
             <h3>
-              ✓ Liveness verification successful
+              ✓ Face verification complete
             </h3>
 
             <p>
-              Your attendance is being recorded...
+              Proceeding to Dynamic QR Verification...
             </p>
-
           </div>
         )}
 
-
-        {/* =========================================
-            CLASS INFORMATION
-        ========================================== */}
+        {/* CLASS INFORMATION */}
 
         <div className="face-footer">
-
           <span>
             CLASS
           </span>
 
           <strong>
-            {className}
+            {className || "Selected class"}
           </strong>
 
           <div className="secure-label">
             <span></span>
             Secure identity verification
           </div>
-
         </div>
 
       </section>

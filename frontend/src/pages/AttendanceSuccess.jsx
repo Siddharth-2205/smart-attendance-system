@@ -1,6 +1,10 @@
 import "../styles/attendance-success.css";
 
-function AttendanceSuccess({ className }) {
+function AttendanceSuccess({
+  className,
+  studentId,
+  verifiedQR,
+}) {
   return (
     <main className="success-page">
       <section className="success-card">
@@ -19,10 +23,9 @@ function AttendanceSuccess({ className }) {
 
         {/* Attendance Details */}
         <div className="attendance-details">
-
           <div>
             <span>Class</span>
-            <strong>{className}</strong>
+            <strong>{className || "Selected class"}</strong>
           </div>
 
           <div>
@@ -30,11 +33,16 @@ function AttendanceSuccess({ className }) {
             <strong>Present</strong>
           </div>
 
+          {studentId && (
+            <div>
+              <span>Student ID</span>
+              <strong>{studentId}</strong>
+            </div>
+          )}
         </div>
 
         {/* Verification Summary */}
         <div className="success-verification">
-
           <p>
             ✓ &nbsp; BLE proximity verified
           </p>
@@ -44,15 +52,19 @@ function AttendanceSuccess({ className }) {
           </p>
 
           <p>
-            ✓ &nbsp; Attendance recorded
+            ✓ &nbsp; Dynamic QR validated
           </p>
 
+          <p>
+            ✓ &nbsp; Attendance flow completed
+          </p>
         </div>
 
         {/* Footer Message */}
         <p className="success-note">
-          Your physical presence was verified using BLE proximity
-          and face liveness detection.
+          Your attendance verification flow completed using
+          BLE proximity, face verification, and dynamic QR
+          validation.
         </p>
 
       </section>
@@ -61,5 +73,3 @@ function AttendanceSuccess({ className }) {
 }
 
 export default AttendanceSuccess;
-
-
