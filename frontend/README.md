@@ -8,7 +8,9 @@ Useful development settings:
 - `VITE_API_PROXY=http://127.0.0.1:4000` selects the backend for the Vite proxy.
 - `VITE_HTTPS_KEY` and `VITE_HTTPS_CERT` enable HTTPS using a trusted development certificate. HTTPS is needed for camera access on other devices.
 
-The student attendance sequence is login, server-validated dynamic QR scan, one captured image compared with the student's enrolled face, and backend-confirmed success. Face matching does not perform liveness detection or detect photo/video spoofing. See [network setup and commands](../README.md).
+The student attendance sequence is login, server-validated dynamic QR scan, a short prompted blink challenge with 10–16 camera frames, enrolled-face matching, and backend-confirmed success. Blink is only a basic liveness cue; it does not provide robust protection from photo/video spoofing. See [network setup and commands](../README.md).
+
+For a production Netlify build, set `VITE_API_URL` to the exact HTTPS API origin (for example, `https://api.example.edu`, with no path), then run `npm run build`. The build writes Netlify `_headers` with a content security policy restricted to that API origin and standard browser security headers. `VITE_API_URL` is public configuration, not a secret. Never place database paths, passwords, `FACE_SERVICE_TOKEN`, or `FACE_TEMPLATE_KEY` in Vite variables.
 
 ## Install on a phone
 

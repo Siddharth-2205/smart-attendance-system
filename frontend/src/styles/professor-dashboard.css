@@ -16,15 +16,29 @@
 .schedule-editor h3 { margin: 0 0 18px; }
 .schedule-editor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .schedule-editor-grid label { display: grid; gap: 6px; color: #58647a; font-size: 12px; font-weight: 700; }
-.schedule-editor-grid input { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid #dfe3ec; border-radius: 8px; color: #182238; background: #fff; }
+.schedule-editor-grid input, .schedule-editor-grid select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid #dfe3ec; border-radius: 8px; color: #182238; background: #fff; }
+.schedule-editor-grid small { color: #7b8498; font-weight: 500; }
 .schedule-editor-grid .enrollment-list-field { grid-column: 1 / -1; }
 .schedule-editor-grid .enrollment-list-field small { color: #7b8498; font-weight: 500; }
+.schedule-editor-grid .enrollment-range-field { grid-column: 1 / -1; display: grid; gap: 8px; }
+.enrollment-range-field > strong { color: #58647a; font-size: 12px; }
+.enrollment-range-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 12px; }
+.enrollment-range-controls label { display: grid; gap: 6px; color: #58647a; font-size: 12px; font-weight: 700; }
+.enrollment-range-controls input { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid #dfe3ec; border-radius: 8px; color: #182238; background: #fff; text-transform: uppercase; }
+.enrollment-range-controls > button { min-height: 40px; white-space: nowrap; }
+.enrollment-range-field > small { color: #7b8498; font-weight: 500; font-size: 11px; }
+.enrollment-range-field > .enrollment-range-message { color: #4e50c9; font-weight: 700; }
+.enrollment-range-controls > button:disabled { opacity: 0.65; cursor: wait; }
 .schedule-days { display: flex; flex-wrap: wrap; gap: 14px; margin: 18px 0; border: 0; padding: 0; }
 .schedule-days legend { margin-bottom: 8px; color: #58647a; font-size: 12px; font-weight: 700; }
 .schedule-days label { display: flex; gap: 5px; align-items: center; font-size: 12px; }
 .schedule-editor-actions, .schedule-card-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .schedule-card-actions { margin-top: 10px; }
-@media (max-width: 600px) { .schedule-editor-grid { grid-template-columns: 1fr; } }
+@media (max-width: 600px) {
+  .schedule-editor-grid { grid-template-columns: 1fr; }
+  .enrollment-range-controls { grid-template-columns: 1fr; }
+  .enrollment-range-controls > button { width: 100%; }
+}
 
 .professor-sidebar {
   width: 250px;
@@ -481,6 +495,155 @@
 .placeholder-panel > p {
   color: #8993a5;
   font-size: 13px;
+}
+
+.attendance-records-page {
+  display: grid;
+  gap: 18px;
+  padding: 24px;
+  border: 1px solid #e9edf4;
+  border-radius: 15px;
+  background: #fff;
+}
+
+.attendance-records-heading,
+.attendance-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.attendance-records-heading h2 {
+  margin: 0 0 8px;
+}
+
+.attendance-records-heading p,
+.attendance-records-message,
+.attendance-records-empty {
+  color: #8993a5;
+  font-size: 13px;
+}
+
+.attendance-records-heading p {
+  margin: 0;
+}
+
+.attendance-records-empty {
+  padding: 24px;
+  border: 1px dashed #dce2ed;
+  border-radius: 10px;
+  text-align: center;
+}
+
+.attendance-session-list {
+  display: grid;
+  gap: 12px;
+}
+
+.attendance-session-row {
+  padding: 16px;
+  border: 1px solid #e9edf4;
+  border-radius: 10px;
+}
+
+.attendance-session-details {
+  display: grid;
+  gap: 6px;
+  color: #8993a5;
+  font-size: 12px;
+}
+
+.attendance-session-details strong {
+  color: #17233b;
+  font-size: 14px;
+}
+
+.attendance-session-details strong span {
+  color: #68768d;
+  font-weight: 500;
+}
+
+.attendance-export-button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  flex: 0 0 auto;
+  padding: 0 18px;
+  border: 1px solid #514de0;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6865f2 0%, #514de0 100%);
+  box-shadow: 0 5px 12px rgb(81 77 224 / 20%);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+}
+
+.attendance-export-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 9px 18px rgb(81 77 224 / 30%);
+  filter: brightness(1.06);
+}
+
+.attendance-export-button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 3px 8px rgb(81 77 224 / 22%);
+}
+
+.attendance-export-button:focus-visible {
+  outline: 3px solid rgb(104 101 242 / 35%);
+  outline-offset: 3px;
+}
+
+.attendance-export-button:disabled {
+  border-color: #a8a7e8;
+  background: #a8a7e8;
+  box-shadow: none;
+  cursor: wait;
+}
+
+.attendance-export-icon {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 18%);
+  font-size: 17px;
+  line-height: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .attendance-export-button {
+    transition: none;
+  }
+}
+
+.attendance-session-live {
+  color: #8993a5;
+  font-size: 12px;
+}
+
+@media (max-width: 650px) {
+  .attendance-records-page {
+    padding: 16px;
+  }
+
+  .attendance-records-heading,
+  .attendance-session-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .attendance-records-heading > button,
+  .attendance-export-button {
+    width: 100%;
+  }
 }
 
 .placeholder-class-list {

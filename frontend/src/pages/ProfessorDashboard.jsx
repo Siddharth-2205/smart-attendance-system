@@ -20,7 +20,8 @@ const navigation = [
 // QR CONFIGURATION
 // ============================================
 
-const QR_VALIDITY_SECONDS = 30;
+const QR_VALIDITY_SECONDS = 5;
+const QR_VALIDITY_OPTIONS = [5, 10, 15, 20, 30, 45, 60, 90, 120];
 const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
 // ============================================
@@ -37,6 +38,10 @@ function ProfessorDashboard({ professorId, onLogout }) {
   const [pageError, setPageError] = useState("");
   const [scheduleForm, setScheduleForm] = useState(null);
   const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [addingStudentRange, setAddingStudentRange] = useState(false);
+  const [attendanceSessions, setAttendanceSessions] = useState([]);
+  const [attendanceSessionsLoading, setAttendanceSessionsLoading] = useState(false);
+  const [exportingSessionId, setExportingSessionId] = useState("");
 
   // Attendance session
   const [sessionActive, setSessionActive] = useState(false);
@@ -88,6 +93,17 @@ function ProfessorDashboard({ professorId, onLogout }) {
   }, []);
 
   useEffect(() => {
+    if (activeTab !== "Attendance Records") return undefined;
+    let active = true;
+    setAttendanceSessionsLoading(true);
+    api("/api/teacher/attendance-sessions")
+      .then(({ sessions }) => { if (active) setAttendanceSessions(sessions); })
+      .catch((err) => { if (active) setPageError(err.message); })
+      .finally(() => { if (active) setAttendanceSessionsLoading(false); });
+    return () => { active = false; };
+  }, [activeTab]);
+
+  useEffect(() => {
     if (!sessionActive || !sessionId) return undefined;
     let active = true;
     const refresh = async () => {
@@ -112,9 +128,10 @@ function ProfessorDashboard({ professorId, onLogout }) {
       }
     };
     refresh();
-    const poll = setInterval(refresh, 1000);
+    const poll = setInterval(refresh, 5000);
+    const countdown = setInterval(() => setSecondsLeft((value) => Math.max(0, value - 1)), 1000);
     const elapsed = setInterval(() => setElapsedSeconds((value) => value + 1), 1000);
-    return () => { active = false; clearInterval(poll); clearInterval(elapsed); };
+    return () => { active = false; clearInterval(poll); clearInterval(countdown); clearInterval(elapsed); };
   }, [sessionActive, sessionId]);
 
   const startSession = async () => {
@@ -154,13 +171,65 @@ function ProfessorDashboard({ professorId, onLogout }) {
     }
   };
 
+  const downloadAttendanceExcel = async (session) => {
+    setExportingSessionId(session.sessionId);
+    setPageError("");
+    try {
+      const result = await api(`/api/sessions/${encodeURIComponent(session.sessionId)}/attendance`);
+      if (result.session.status !== "closed") throw new Error("End this attendance session before downloading its report.");
+      const [{ createAttendanceWorkbook }, XLSX] = await Promise.all([
+        import("../utils/attendanceExcel.js"), import("xlsx"),
+      ]);
+      const { workbook, fileName } = createAttendanceWorkbook(result, XLSX);
+      XLSX.writeFile(workbook, fileName);
+    } catch (err) {
+      setPageError(err.message || "Unable to download the attendance report.");
+    } finally {
+      setExportingSessionId("");
+    }
+  };
+
   const editSchedule = (course = null) => {
     setPageError("");
     setScheduleForm(course ? {
       id: course.id, name: course.name, code: course.code, days: course.days || [],
       startTime: course.startTime, endTime: course.endTime, beaconId: course.beaconId,
-      students: course.students || 0, studentIdsText: (course.studentIds || []).join(", "),
-    } : { name: "", code: "", days: ["Monday"], startTime: "09:00", endTime: "10:00", beaconId: "", students: 0, studentIdsText: "" });
+      qrTtlSeconds: course.qrTtlSeconds ?? QR_VALIDITY_SECONDS,
+      students: course.students || 0, studentIdsText: (course.studentIds || []).join(", "), rangeFrom: "", rangeTo: "", rangeMessage: "",
+    } : { name: "", code: "", days: ["Monday"], startTime: "09:00", endTime: "10:00", beaconId: "", qrTtlSeconds: QR_VALIDITY_SECONDS, students: 0, studentIdsText: "", rangeFrom: "", rangeTo: "", rangeMessage: "" });
+  };
+
+  const addRegisteredStudentsInRange = async () => {
+    if (!scheduleForm) return;
+    const from = scheduleForm.rangeFrom.trim().toUpperCase();
+    const to = scheduleForm.rangeTo.trim().toUpperCase();
+    setAddingStudentRange(true);
+    setScheduleForm((current) => current ? ({ ...current, rangeMessage: "" }) : current);
+    try {
+      const query = new URLSearchParams({ from, to });
+      const { studentIds } = await api(`/api/teacher/students/range?${query.toString()}`);
+      if (!studentIds.length) {
+        setScheduleForm((current) => current ? ({ ...current, rangeMessage: "No registered student accounts were found in that range." }) : current);
+        return;
+      }
+      setScheduleForm((current) => {
+        if (!current) return current;
+        const existing = current.studentIdsText.split(/[\s,]+/).map((id) => id.trim().toUpperCase()).filter(Boolean);
+        const existingSet = new Set(existing);
+        const additions = studentIds.filter((id) => !existingSet.has(id));
+        return {
+          ...current,
+          studentIdsText: [...existing, ...additions].join(", "),
+          rangeMessage: additions.length
+            ? `Added ${additions.length} registered student${additions.length === 1 ? "" : "s"}. You can still enter other roll numbers manually.`
+            : "All registered students in that range are already listed.",
+        };
+      });
+    } catch (err) {
+      setScheduleForm((current) => current ? ({ ...current, rangeMessage: err.message || "Unable to look up registered students." }) : current);
+    } finally {
+      setAddingStudentRange(false);
+    }
   };
 
   const saveSchedule = async (event) => {
@@ -661,10 +730,23 @@ function ProfessorDashboard({ professorId, onLogout }) {
                 <label>Start time<input type="time" required value={scheduleForm.startTime} onChange={(e) => setScheduleForm({ ...scheduleForm, startTime: e.target.value })} /></label>
                 <label>End time<input type="time" required value={scheduleForm.endTime} onChange={(e) => setScheduleForm({ ...scheduleForm, endTime: e.target.value })} /></label>
                 <label>Room<input required value={scheduleForm.beaconId} placeholder="e.g. Room 204" onChange={(e) => setScheduleForm({ ...scheduleForm, beaconId: e.target.value })} /></label>
-                <label className="enrollment-list-field">Enrolled student roll numbers<input required value={scheduleForm.studentIdsText} placeholder="23BCS001, 24BDA002, 25BEC003" onChange={(e) => setScheduleForm({ ...scheduleForm, studentIdsText: e.target.value })} /><small>Use YYBCSNNN (CSE), YYBDANNN (DSAI), or YYBECNNN (ECE), separated by commas. Students must also be registered.</small></label>
+                <label>QR code validity<select value={scheduleForm.qrTtlSeconds} onChange={(e) => setScheduleForm({ ...scheduleForm, qrTtlSeconds: Number(e.target.value) })}>{QR_VALIDITY_OPTIONS.map((seconds) => <option key={seconds} value={seconds}>{seconds} seconds</option>)}</select><small>Each QR token for this class expires after the selected time.</small></label>
+                <div className="enrollment-range-field">
+                  <strong>Add registered students by roll-number range</strong>
+                  <div className="enrollment-range-controls">
+                    <label>From<input value={scheduleForm.rangeFrom} placeholder="25BCS001" onChange={(e) => setScheduleForm({ ...scheduleForm, rangeFrom: e.target.value.toUpperCase() })} /></label>
+                    <label>To<input value={scheduleForm.rangeTo} placeholder="25BCS300" onChange={(e) => setScheduleForm({ ...scheduleForm, rangeTo: e.target.value.toUpperCase() })} /></label>
+                    <button type="button" className="secondary-button" onClick={addRegisteredStudentsInRange} disabled={addingStudentRange}>
+                      {addingStudentRange ? "Finding students..." : "Add range"}
+                    </button>
+                  </div>
+                  <small>The range is inclusive and must use one admission year and department. Only registered student accounts are added.</small>
+                  {scheduleForm.rangeMessage ? <small className="enrollment-range-message" role="status">{scheduleForm.rangeMessage}</small> : null}
+                </div>
+                <label className="enrollment-list-field">Enrolled student roll numbers<input required value={scheduleForm.studentIdsText} placeholder="23BCS001, 24BDA002, 25BEC003" onChange={(e) => setScheduleForm({ ...scheduleForm, studentIdsText: e.target.value })} /><small>You can still enter students from other batches manually. Use YYBCSNNN (CSE), YYBDANNN (DSAI), or YYBECNNN (ECE); students must have registered accounts.</small></label>
               </div>
               <fieldset className="schedule-days"><legend>Class days</legend>{WEEKDAYS.map((day) => <label key={day}><input type="checkbox" checked={scheduleForm.days.includes(day)} onChange={(e) => setScheduleForm({ ...scheduleForm, days: e.target.checked ? [...scheduleForm.days, day] : scheduleForm.days.filter((item) => item !== day) })} />{day.slice(0, 3)}</label>)}</fieldset>
-              <div className="schedule-editor-actions"><button className="start-button" type="submit" disabled={scheduleSaving}>{scheduleSaving ? "Saving..." : "Save class"}</button><button type="button" className="secondary-button" onClick={() => setScheduleForm(null)}>Cancel</button></div>
+              <div className="schedule-editor-actions"><button className="start-button" type="submit" disabled={scheduleSaving || addingStudentRange}>{scheduleSaving ? "Saving..." : "Save class"}</button><button type="button" className="secondary-button" onClick={() => setScheduleForm(null)}>Cancel</button></div>
             </form>}
 
             <div className="classes-grid">
@@ -699,6 +781,8 @@ function ProfessorDashboard({ professorId, onLogout }) {
                   <p className="course-code">{(item.days || []).join(", ")} · {item.time}</p>
 
                   <div className="course-meta">
+
+                    <p>QR valid for {item.qrTtlSeconds ?? QR_VALIDITY_SECONDS} seconds</p>
 
                     <p>◷ {item.time}</p>
 
@@ -1175,30 +1259,38 @@ function ProfessorDashboard({ professorId, onLogout }) {
         ======================================== */}
 
         {activeTab === "Attendance Records" && (
-
-          <section className="placeholder-panel">
-
-            <div className="placeholder-icon">
-              ▦
+          <section className="attendance-records-page">
+            <div className="attendance-records-heading">
+              <div>
+                <h2>Attendance Records</h2>
+                <p>Download a class roster for a completed session. Present students appear first and absentees are listed at the end.</p>
+              </div>
+              <button type="button" className="secondary-button" onClick={() => setActiveTab("Live Attendance")}>
+                Open Live Attendance
+              </button>
             </div>
-
-            <h2>Attendance Records</h2>
-
-            <p>
-              Historical attendance records will be displayed
-              here after backend integration.
-            </p>
-
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => setActiveTab("Live Attendance")}
-            >
-              Open Live Attendance →
-            </button>
-
+            {attendanceSessionsLoading ? <p className="attendance-records-message">Loading attendance sessions...</p> : null}
+            {!attendanceSessionsLoading && attendanceSessions.length === 0 ? (
+              <div className="attendance-records-empty">No attendance sessions have been recorded yet.</div>
+            ) : null}
+            <div className="attendance-session-list">
+              {attendanceSessions.map((session) => (
+                <article className="attendance-session-row" key={session.sessionId}>
+                  <div className="attendance-session-details">
+                    <strong>{session.courseName} <span>({session.courseCode})</span></strong>
+                    <span>{new Date(session.createdAt).toLocaleString("en-IN")}</span>
+                    <span>{session.presentCount} present ? {Math.max(0, session.totalCount - session.presentCount)} absent ? {session.totalCount} students</span>
+                  </div>
+                  {session.status === "closed" ? (
+                    <button type="button" className="attendance-export-button" disabled={exportingSessionId === session.sessionId} onClick={() => downloadAttendanceExcel(session)}>
+                      <span className="attendance-export-icon" aria-hidden="true">{exportingSessionId === session.sessionId ? "…" : "↓"}</span>
+                      {exportingSessionId === session.sessionId ? "Preparing Excel..." : "Download Excel"}
+                    </button>
+                  ) : <span className="attendance-session-live">End session to download</span>}
+                </article>
+              ))}
+            </div>
           </section>
-
         )}
 
         {/* ========================================

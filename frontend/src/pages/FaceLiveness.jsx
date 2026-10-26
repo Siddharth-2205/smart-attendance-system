@@ -11,6 +11,7 @@ function FaceLiveness({ className, attemptId, onVerified }) {
   const [hasCompleted, setHasCompleted] = useState(false);
   const [cameraStatus, setCameraStatus] = useState("requesting");
   const [verificationStatus, setVerificationStatus] = useState("ready");
+  const [verificationStage, setVerificationStage] = useState("positioning");
   const [error, setError] = useState("");
 
   // ==========================================
@@ -90,27 +91,43 @@ function FaceLiveness({ className, attemptId, onVerified }) {
 
     inFlightRef.current = true;
     setVerificationStatus("verifying");
+    setVerificationStage("positioning");
     setError("");
 
     try {
+      const challenge = await api(`/api/attendance/attempts/${attemptId}/face/challenge`, { method: "POST" });
+      if (challenge.alreadyVerified) {
+        if (typeof onVerified === "function") await onVerified();
+        hasCompletedRef.current = true;
+        setHasCompleted(true);
+        setVerificationStatus("verified");
+        return;
+      }
+
       const video = videoRef.current;
       if (!video || video.readyState < 2) throw new Error("Camera is not ready. Please try again.");
       const canvas = canvasRef.current;
-      const width = Math.min(video.videoWidth, 640);
+      const width = Math.min(video.videoWidth, 480);
       if (!width || !video.videoHeight) throw new Error("Camera is not ready. Please try again.");
       const height = Math.round((video.videoHeight / video.videoWidth) * width);
       canvas.width = width;
       canvas.height = height;
       const context = canvas.getContext("2d");
-      context.save();
-      context.translate(width, 0);
-      context.scale(-1, 1);
-      context.drawImage(video, 0, 0, width, height);
-      context.restore();
-      const image = canvas.toDataURL("image/jpeg", 0.7);
+      const frames = [];
+      for (let index = 0; index < 16; index += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+        if (index >= challenge.promptFrame) setVerificationStage("blink");
+        context.save();
+        context.translate(width, 0);
+        context.scale(-1, 1);
+        context.drawImage(video, 0, 0, width, height);
+        context.restore();
+        frames.push(canvas.toDataURL("image/jpeg", 0.55));
+      }
+      setVerificationStage("checking");
       await api(`/api/attendance/attempts/${attemptId}/face`, {
         method: "POST",
-        body: { image },
+        body: { challengeId: challenge.challengeId, frames },
       });
       if (typeof onVerified === "function") await onVerified();
       hasCompletedRef.current = true;
@@ -287,7 +304,7 @@ function FaceLiveness({ className, attemptId, onVerified }) {
               </div>
 
               <strong>
-                  Face Match Verified
+                  Blink and Face Match Verified
               </strong>
 
               <span>
@@ -310,7 +327,7 @@ function FaceLiveness({ className, attemptId, onVerified }) {
                 </strong>
 
                 <span>
-                    Your camera image will be compared with your enrolled face.
+                    Blink once when prompted. We will compare your face with its enrollment.
                 </span>
               </div>
             </div>
@@ -340,11 +357,11 @@ function FaceLiveness({ className, attemptId, onVerified }) {
 
                 <div>
                   <strong>
-                    Look at the camera
+                    Blink once when prompted
                   </strong>
 
                   <span>
-                    Keep your eyes directed toward the camera.
+                    Keep looking at the camera and blink naturally after the prompt.
                   </span>
                 </div>
               </div>
@@ -378,7 +395,7 @@ function FaceLiveness({ className, attemptId, onVerified }) {
                 disabled={hasCompleted}
               >
                 <span>
-                  Start Face Verification
+                  Start Blink and Face Verification
                 </span>
 
                 <span className="button-arrow">
@@ -386,7 +403,7 @@ function FaceLiveness({ className, attemptId, onVerified }) {
                 </span>
               </button>
               <p className="face-status">
-                Face matching does not detect photo or video spoofing.
+                A blink is a basic liveness cue and cannot prevent replayed video.
               </p>
               </>
             )}
@@ -405,11 +422,11 @@ function FaceLiveness({ className, attemptId, onVerified }) {
 
               <div>
                 <h3>
-                  Verifying your face
+                  {verificationStage === "blink" ? "Blink once now" : verificationStage === "checking" ? "Checking blink and face match" : "Position your face"}
                 </h3>
 
                 <p>
-                  Comparing the captured face with your enrollment.
+                  {verificationStage === "blink" ? "Keep looking at the camera, then blink once." : verificationStage === "checking" ? "Checking the blink and comparing your face with enrollment." : "Keep one face centered and your eyes open until prompted."}
                 </p>
               </div>
 
@@ -418,7 +435,7 @@ function FaceLiveness({ className, attemptId, onVerified }) {
             <div className="verification-progress">
               <div className="verification-progress-header">
                 <span>
-                  Face match
+                  {verificationStage === "blink" ? "Blink check" : "Face and blink check"}
                 </span>
 
                 <span>

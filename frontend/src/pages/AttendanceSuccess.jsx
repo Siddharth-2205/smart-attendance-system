@@ -46,7 +46,8 @@ function AttendanceSuccess({ attendance, onReturn }) {
         {/* Verification Summary */}
         <div className="success-verification">
           {attendance.verifiedSteps?.includes("qr") && <p>[OK] Dynamic QR validated</p>}
-          {attendance.verifiedSteps?.includes("face") && <p>[OK] Face match and action checks passed</p>}
+          {attendance.verifiedSteps?.includes("blink") && <p>[OK] Blink prompt passed</p>}
+          {attendance.verifiedSteps?.includes("face") && <p>[OK] Enrolled face match passed</p>}
           <p>[OK] Attendance recorded by the server</p>
         </div>
 
