@@ -88,6 +88,64 @@
   font-size: 14px;
 }
 
+.face-enroll-card {
+  margin-bottom: 32px;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.face-enroll-card h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.face-enroll-card p,
+.face-enrolled-status {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.face-enroll-card form {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.face-enroll-card .register-camera {
+  width: 100%;
+  max-width: 420px;
+  min-height: 220px;
+  object-fit: cover;
+  transform: scaleX(-1);
+  background: #020617;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+}
+
+.face-enroll-card .consent-label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  color: #cbd5e1;
+  font-size: 13px;
+}
+
+.face-enroll-card .consent-label input {
+  margin-top: 3px;
+}
+
+.face-captured {
+  color: #86efac;
+  font-size: 13px;
+}
+
+.face-enrolled-status {
+  margin-bottom: 24px;
+}
+
 
 /* ========================================
    ATTENDANCE SUMMARY
@@ -181,6 +239,8 @@
   font-size: 20px;
   font-weight: 700;
 }
+
+.schedule-caption { margin: -8px 0 16px; color: var(--text-secondary); font-size: 13px; }
 
 .class-list {
   display: flex;

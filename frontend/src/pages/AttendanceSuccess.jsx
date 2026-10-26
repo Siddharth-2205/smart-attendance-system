@@ -1,13 +1,11 @@
 import "../styles/attendance-success.css";
 
-function AttendanceSuccess({
-  className,
-  studentId,
-  verifiedQR,
-}) {
+function AttendanceSuccess({ attendance, onReturn }) {
+  if (!attendance?.markedAt || attendance.status !== "present") return null;
   return (
     <main className="success-page">
       <section className="success-card">
+        <p className="success-step">STEP 4 OF 4 · ATTENDANCE SUCCESS</p>
 
         {/* Success Icon */}
         <div className="success-check">
@@ -25,7 +23,7 @@ function AttendanceSuccess({
         <div className="attendance-details">
           <div>
             <span>Class</span>
-            <strong>{className || "Selected class"}</strong>
+            <strong>{attendance.courseName}</strong>
           </div>
 
           <div>
@@ -33,39 +31,30 @@ function AttendanceSuccess({
             <strong>Present</strong>
           </div>
 
-          {studentId && (
+          {attendance.studentId && (
             <div>
               <span>Student ID</span>
-              <strong>{studentId}</strong>
+              <strong>{attendance.studentId}</strong>
             </div>
           )}
+          <div>
+            <span>Recorded at</span>
+            <strong>{new Date(attendance.markedAt).toLocaleString()}</strong>
+          </div>
         </div>
 
         {/* Verification Summary */}
         <div className="success-verification">
-          <p>
-            ✓ &nbsp; BLE proximity verified
-          </p>
-
-          <p>
-            ✓ &nbsp; Face liveness verified
-          </p>
-
-          <p>
-            ✓ &nbsp; Dynamic QR validated
-          </p>
-
-          <p>
-            ✓ &nbsp; Attendance flow completed
-          </p>
+          {attendance.verifiedSteps?.includes("qr") && <p>[OK] Dynamic QR validated</p>}
+          {attendance.verifiedSteps?.includes("face") && <p>[OK] Face match and action checks passed</p>}
+          <p>[OK] Attendance recorded by the server</p>
         </div>
 
         {/* Footer Message */}
         <p className="success-note">
-          Your attendance verification flow completed using
-          BLE proximity, face verification, and dynamic QR
-          validation.
+          Your attendance and the required verification checks were confirmed by the server.
         </p>
+      <button type="button" className="success-button" onClick={onReturn}>Return to dashboard</button>
 
       </section>
     </main>

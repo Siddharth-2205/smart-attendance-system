@@ -216,3 +216,35 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Smart Attendance local databases and biometric templates
+backend/data/
+face-liveness/data/
+frontend/.certs/
+
+# Private institutional identity import files
+backend/data/approved-users*.json
+
+# JavaScript dependencies and build output
+**/node_modules/
+**/dist/
+**/coverage/
+**/.vite/
+npm-debug.log*
+
+# Local environment files; keep checked-in examples eligible
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Local database files and SQLite journals
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# Operating-system files
+.DS_Store
+Thumbs.db

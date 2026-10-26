@@ -1,34 +1,7 @@
 import { useEffect, useState } from "react";
+import { api } from "../api";
 import { QRCodeSVG } from "qrcode.react";
 import "../styles/professor-dashboard.css";
-
-// ============================================
-// SAMPLE CLASS DATA
-// ============================================
-
-const classes = [
-  {
-    name: "Computer Networks",
-    code: "CS301",
-    time: "10:00 AM – 11:00 AM",
-    room: "Room 201",
-    students: 60,
-  },
-  {
-    name: "Information Retrieval",
-    code: "CS402",
-    time: "2:00 PM – 3:00 PM",
-    room: "Room 105",
-    students: 55,
-  },
-  {
-    name: "Data Structures",
-    code: "CS202",
-    time: "3:00 PM – 4:00 PM",
-    room: "Lab 2",
-    students: 62,
-  },
-];
 
 // ============================================
 // DASHBOARD NAVIGATION
@@ -48,39 +21,7 @@ const navigation = [
 // ============================================
 
 const QR_VALIDITY_SECONDS = 30;
-
-// ============================================
-// TOKEN GENERATION
-// ============================================
-
-function createSessionToken() {
-  if (globalThis.crypto?.randomUUID) {
-    return globalThis.crypto.randomUUID();
-  }
-
-  // Fallback for development environments.
-  return `${Date.now()}-${Math.random()
-    .toString(36)
-    .slice(2)}`;
-}
-
-// ============================================
-// QR PAYLOAD GENERATION
-// ============================================
-
-function createQrDetails() {
-  const issuedAt = new Date();
-
-  const expiresAt = new Date(
-    issuedAt.getTime() + QR_VALIDITY_SECONDS * 1000
-  );
-
-  return {
-    token: createSessionToken(),
-    issuedAt: issuedAt.toISOString(),
-    expiresAt: expiresAt.toISOString(),
-  };
-}
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
 // ============================================
 // MAIN PROFESSOR DASHBOARD
@@ -91,7 +32,11 @@ function ProfessorDashboard({ professorId, onLogout }) {
   const [activeTab, setActiveTab] = useState("Overview");
 
   // Class selection
-  const [selectedClass, setSelectedClass] = useState(classes[0]);
+  const [classes, setClasses] = useState([]);
+  const [selectedClass, setSelectedClass] = useState(null);
+  const [pageError, setPageError] = useState("");
+  const [scheduleForm, setScheduleForm] = useState(null);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
 
   // Attendance session
   const [sessionActive, setSessionActive] = useState(false);
@@ -99,11 +44,8 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
   // Dynamic QR state
   const [sessionToken, setSessionToken] = useState("");
-  const [qrIssuedAt, setQrIssuedAt] = useState("");
-  const [qrExpiresAt, setQrExpiresAt] = useState("");
-  const [secondsLeft, setSecondsLeft] = useState(
-    QR_VALIDITY_SECONDS
-  );
+  const [secondsLeft, setSecondsLeft] = useState(QR_VALIDITY_SECONDS);
+  const [qrValiditySeconds, setQrValiditySeconds] = useState(QR_VALIDITY_SECONDS);
 
   // Session duration
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -123,107 +65,138 @@ function ProfessorDashboard({ professorId, onLogout }) {
   });
 
   // ============================================
-  // DYNAMIC QR ROTATION
-  // ============================================
+  useEffect(() => {
+    let active = true;
+    api("/api/teacher/courses")
+      .then(({ courses: result }) => {
+        if (!active) return;
+        const mapped = result.map((course) => ({
+          ...course,
+          time: `${course.startTime} - ${course.endTime}`,
+          room: course.beaconId,
+        }));
+        setClasses(mapped);
+        const selected = mapped.find((course) => course.activeSessionCode) || mapped[0] || null;
+        setSelectedClass(selected);
+        if (selected?.activeSessionCode) {
+          setSessionId(selected.activeSessionCode);
+          setSessionActive(true);
+        }
+      })
+      .catch((err) => { if (active) setPageError(err.message); });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
-    if (!sessionActive) {
-      return undefined;
+    if (!sessionActive || !sessionId) return undefined;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const [qr, attendance] = await Promise.all([
+          api(`/api/sessions/${encodeURIComponent(sessionId)}/qr`),
+          api(`/api/sessions/${encodeURIComponent(sessionId)}/attendance`),
+        ]);
+        if (!active) return;
+        setSessionToken(qr.token);
+        setQrValiditySeconds(qr.ttlSeconds ?? QR_VALIDITY_SECONDS);
+        setSecondsLeft(Math.max(0, Math.ceil((Date.parse(qr.expiresAt) - Date.now()) / 1000)));
+        setDemoAttendance(attendance.roster.filter((student) => student.present).map((student) => ({
+          id: student.studentId,
+          name: student.name,
+          status: "Present",
+          time: student.markedAt ? new Date(student.markedAt).toLocaleTimeString("en-IN") : "?",
+        })));
+        setPageError("");
+      } catch (err) {
+        if (active) setPageError(err.message);
+      }
+    };
+    refresh();
+    const poll = setInterval(refresh, 1000);
+    const elapsed = setInterval(() => setElapsedSeconds((value) => value + 1), 1000);
+    return () => { active = false; clearInterval(poll); clearInterval(elapsed); };
+  }, [sessionActive, sessionId]);
+
+  const startSession = async () => {
+    if (sessionActive || !selectedClass) return;
+    try {
+      const session = await api("/api/sessions", {
+        method: "POST",
+        body: { courseId: currentClass.id },
+      });
+      setPageError("");
+      setSessionId(session.code);
+      setDemoAttendance([]);
+      setElapsedSeconds(0);
+      setSessionActive(true);
+      setActiveTab("Live Attendance");
+      setClasses((previous) => previous.map((course) => course.id === currentClass.id
+        ? { ...course, activeSessionCode: session.code }
+        : course));
+    } catch (err) {
+      setPageError(err.message);
     }
+  };
 
-    // Generate a fresh QR token and timestamps.
-    const refreshQr = () => {
-      const qr = createQrDetails();
-
-      setSessionToken(qr.token);
-      setQrIssuedAt(qr.issuedAt);
-      setQrExpiresAt(qr.expiresAt);
+  const stopSession = async () => {
+    try {
+      await api(`/api/sessions/${encodeURIComponent(sessionId)}/close`, { method: "POST" });
+      setSessionActive(false);
+      setSessionToken("");
+      setSessionId("");
       setSecondsLeft(QR_VALIDITY_SECONDS);
-    };
-
-    // Generate a QR immediately.
-    refreshQr();
-
-    // Rotate QR every five seconds.
-    const rotationInterval = setInterval(() => {
-      refreshQr();
-    }, QR_VALIDITY_SECONDS * 1000);
-
-    // Update countdown.
-    const countdownInterval = setInterval(() => {
-      setSecondsLeft((previous) =>
-        previous <= 1
-          ? QR_VALIDITY_SECONDS
-          : previous - 1
-      );
-    }, 1000);
-
-    // Track session duration.
-    const elapsedInterval = setInterval(() => {
-      setElapsedSeconds((previous) => previous + 1);
-    }, 1000);
-
-    // Cleanup timers when the session ends
-    // or the component unmounts.
-    return () => {
-      clearInterval(rotationInterval);
-      clearInterval(countdownInterval);
-      clearInterval(elapsedInterval);
-    };
-  }, [sessionActive]);
-
-  // ============================================
-  // START ATTENDANCE SESSION
-  // ============================================
-
-  const startSession = () => {
-    if (sessionActive) {
-      return;
+      setClasses((previous) => previous.map((course) => course.code === selectedClass?.code
+        ? { ...course, activeSessionCode: null }
+        : course));
+      setPageError("");
+    } catch (err) {
+      setPageError(err.message);
     }
+  };
 
-    const newSessionId = createSessionToken();
+  const editSchedule = (course = null) => {
+    setPageError("");
+    setScheduleForm(course ? {
+      id: course.id, name: course.name, code: course.code, days: course.days || [],
+      startTime: course.startTime, endTime: course.endTime, beaconId: course.beaconId,
+      students: course.students || 0, studentIdsText: (course.studentIds || []).join(", "),
+    } : { name: "", code: "", days: ["Monday"], startTime: "09:00", endTime: "10:00", beaconId: "", students: 0, studentIdsText: "" });
+  };
 
-    const qr = createQrDetails();
+  const saveSchedule = async (event) => {
+    event.preventDefault();
+    if (!scheduleForm) return;
+    setScheduleSaving(true);
+    try {
+      const saved = await api(scheduleForm.id ? `/api/teacher/courses/${encodeURIComponent(scheduleForm.id)}` : "/api/teacher/courses", {
+        method: scheduleForm.id ? "PUT" : "POST",
+        body: { ...scheduleForm, studentIds: scheduleForm.studentIdsText.split(",").map((id) => id.trim()).filter(Boolean), beaconId: scheduleForm.beaconId || `Room ${scheduleForm.code}` },
+      });
+      const course = { ...saved.course, time: `${saved.course.startTime} - ${saved.course.endTime}`, room: saved.course.beaconId };
+      setClasses((previous) => scheduleForm.id ? previous.map((item) => item.id === course.id ? course : item) : [...previous, course]);
+      if (selectedClass?.id === course.id) setSelectedClass(course);
+      setScheduleForm(null);
+      setPageError("");
+    } catch (err) { setPageError(err.message); }
+    finally { setScheduleSaving(false); }
+  };
 
-    setSessionId(newSessionId);
-
-    setDemoAttendance([]);
-
-    setElapsedSeconds(0);
-
-    setSessionToken(qr.token);
-    setQrIssuedAt(qr.issuedAt);
-    setQrExpiresAt(qr.expiresAt);
-
-    setSecondsLeft(QR_VALIDITY_SECONDS);
-
-    setSessionActive(true);
-
-    setActiveTab("Live Attendance");
+  const removeSchedule = async (course) => {
+    if (!window.confirm(`Remove ${course.code} from your schedule?`)) return;
+    try {
+      await api(`/api/teacher/courses/${encodeURIComponent(course.id)}`, { method: "DELETE" });
+      setClasses((previous) => previous.filter((item) => item.id !== course.id));
+      if (selectedClass?.id === course.id) setSelectedClass(null);
+      setPageError("");
+    } catch (err) { setPageError(err.message); }
   };
 
   // ============================================
-  // STOP ATTENDANCE SESSION
-  // ============================================
-
-  const stopSession = () => {
-    setSessionActive(false);
-
-    setSessionToken("");
-    setSessionId("");
-
-    setQrIssuedAt("");
-    setQrExpiresAt("");
-
-    setSecondsLeft(QR_VALIDITY_SECONDS);
-  };
-
-  // ============================================
-  // OPEN A CLASS
+  //   // OPEN A CLASS
   // ============================================
 
   const openClass = (classItem) => {
-    if (sessionActive && selectedClass.code !== classItem.code) {
+    if (sessionActive && currentClass.code !== classItem.code) {
       window.alert(
         "Please end the current attendance session before switching classes."
       );
@@ -264,50 +237,20 @@ function ProfessorDashboard({ professorId, onLogout }) {
   // ATTENDANCE STATISTICS
   // ============================================
 
+  const currentClass = selectedClass || classes[0] || {
+    name: "No courses available", code: "", room: "", students: 0,
+  };
+
   const presentCount = demoAttendance.filter(
     (student) => student.status === "Present"
   ).length;
 
   const attendancePercentage =
-    selectedClass.students > 0
+    currentClass.students > 0
       ? Math.round(
-          (presentCount / selectedClass.students) * 100
+          (presentCount / currentClass.students) * 100
         )
       : 0;
-
-  // ============================================
-  // SIMULATE ATTENDANCE FOR FRONTEND TESTING
-  // ============================================
-
-  const addDemoAttendance = () => {
-    if (!sessionActive) {
-      return;
-    }
-
-    if (presentCount >= selectedClass.students) {
-      window.alert(
-        "All enrolled students have already been marked present in this demo."
-      );
-
-      return;
-    }
-
-    const nextNumber = demoAttendance.length + 1;
-
-    const demoStudent = {
-      id: `DEMO${Date.now()}`,
-      name: `Demo Student ${nextNumber}`,
-      status: "Present",
-      time: new Date().toLocaleTimeString("en-IN"),
-      classCode: selectedClass.code,
-      sessionId,
-    };
-
-    setDemoAttendance((previous) => [
-      ...previous,
-      demoStudent,
-    ]);
-  };
 
   // ============================================
   // MAIN UI
@@ -315,6 +258,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
   return (
     <div className="professor-layout">
+      {pageError && <p className="professor-login-error" role="alert">{pageError}</p>}
 
       {/* ========================================
           SIDEBAR
@@ -499,7 +443,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                     : "—"}
                 </strong>
 
-                <p>Current demo session</p>
+                <p>Current session</p>
 
               </article>
 
@@ -574,7 +518,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
                     <span className="class-status">
                       {sessionActive &&
-                      selectedClass.code === item.code
+                      currentClass.code === item.code
                         ? "Live"
                         : "Upcoming"}
                     </span>
@@ -708,6 +652,21 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
             </div>
 
+            <button type="button" className="start-button" onClick={() => editSchedule()}>+ Add class</button>
+            {scheduleForm && <form className="schedule-editor" onSubmit={saveSchedule}>
+              <h3>{scheduleForm.id ? "Edit scheduled class" : "Add scheduled class"}</h3>
+              <div className="schedule-editor-grid">
+                <label>Course name<input required maxLength={100} value={scheduleForm.name} onChange={(e) => setScheduleForm({ ...scheduleForm, name: e.target.value })} /></label>
+                <label>Course code<input required maxLength={20} value={scheduleForm.code} onChange={(e) => setScheduleForm({ ...scheduleForm, code: e.target.value.toUpperCase() })} /></label>
+                <label>Start time<input type="time" required value={scheduleForm.startTime} onChange={(e) => setScheduleForm({ ...scheduleForm, startTime: e.target.value })} /></label>
+                <label>End time<input type="time" required value={scheduleForm.endTime} onChange={(e) => setScheduleForm({ ...scheduleForm, endTime: e.target.value })} /></label>
+                <label>Room<input required value={scheduleForm.beaconId} placeholder="e.g. Room 204" onChange={(e) => setScheduleForm({ ...scheduleForm, beaconId: e.target.value })} /></label>
+                <label className="enrollment-list-field">Enrolled student roll numbers<input required value={scheduleForm.studentIdsText} placeholder="23BCS001, 24BDA002, 25BEC003" onChange={(e) => setScheduleForm({ ...scheduleForm, studentIdsText: e.target.value })} /><small>Use YYBCSNNN (CSE), YYBDANNN (DSAI), or YYBECNNN (ECE), separated by commas. Students must also be registered.</small></label>
+              </div>
+              <fieldset className="schedule-days"><legend>Class days</legend>{WEEKDAYS.map((day) => <label key={day}><input type="checkbox" checked={scheduleForm.days.includes(day)} onChange={(e) => setScheduleForm({ ...scheduleForm, days: e.target.checked ? [...scheduleForm.days, day] : scheduleForm.days.filter((item) => item !== day) })} />{day.slice(0, 3)}</label>)}</fieldset>
+              <div className="schedule-editor-actions"><button className="start-button" type="submit" disabled={scheduleSaving}>{scheduleSaving ? "Saving..." : "Save class"}</button><button type="button" className="secondary-button" onClick={() => setScheduleForm(null)}>Cancel</button></div>
+            </form>}
+
             <div className="classes-grid">
 
               {classes.map((item) => (
@@ -725,7 +684,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
                     <span className="class-status">
                       {sessionActive &&
-                      selectedClass.code === item.code
+                      currentClass.code === item.code
                         ? "Live"
                         : "Upcoming"}
                     </span>
@@ -737,6 +696,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                   <p className="course-code">
                     {item.code}
                   </p>
+                  <p className="course-code">{(item.days || []).join(", ")} · {item.time}</p>
 
                   <div className="course-meta">
 
@@ -757,6 +717,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                   >
                     View Class →
                   </button>
+                  <div className="schedule-card-actions"><button type="button" className="secondary-button" onClick={() => editSchedule(item)}>Edit schedule</button><button type="button" className="secondary-button" onClick={() => removeSchedule(item)}>Remove</button></div>
 
                 </article>
 
@@ -821,7 +782,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
                 <select
                   id="attendance-class"
-                  value={selectedClass.code}
+                  value={currentClass.code}
                   disabled={sessionActive}
                   onChange={(event) => {
 
@@ -896,7 +857,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                     <h3>Dynamic QR Code</h3>
 
                     <p>
-                      Rotates automatically every 5 seconds.
+                      Rotates automatically every {qrValiditySeconds} seconds.
                     </p>
 
                   </div>
@@ -915,13 +876,8 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
                       <QRCodeSVG
                         value={JSON.stringify({
-                          type: "attendance-session",
                           sessionId,
-                          classCode: selectedClass.code,
-                          professorId,
                           token: sessionToken,
-                          issuedAt: qrIssuedAt,
-                          expiresAt: qrExpiresAt,
                         })}
                         size={210}
                         level="H"
@@ -951,7 +907,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                           style={{
                             width: `${
                               (secondsLeft /
-                                QR_VALIDITY_SECONDS) *
+                                qrValiditySeconds) *
                               100
                             }%`,
                           }}
@@ -962,7 +918,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                     </div>
 
                     <p className="qr-security-note">
-                      Demo QR token: {sessionToken.slice(0, 12)}…
+                      Current QR token: {sessionToken.slice(0, 12)}…
                     </p>
 
                     <p className="qr-security-note">
@@ -1016,7 +972,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                     <span>Course</span>
 
                     <strong>
-                      {selectedClass.name}
+                      {currentClass.name}
                     </strong>
                   </div>
 
@@ -1024,7 +980,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                     <span>Course Code</span>
 
                     <strong>
-                      {selectedClass.code}
+                      {currentClass.code}
                     </strong>
                   </div>
 
@@ -1032,7 +988,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                     <span>Classroom</span>
 
                     <strong>
-                      {selectedClass.room}
+                      {currentClass.room}
                     </strong>
                   </div>
 
@@ -1040,7 +996,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                     <span>Enrolled Students</span>
 
                     <strong>
-                      {selectedClass.students}
+                      {currentClass.students}
                     </strong>
                   </div>
 
@@ -1056,7 +1012,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                     <span>Verification</span>
 
                     <strong>
-                      BLE + Face Liveness
+                      Dynamic QR + Face Verification
                     </strong>
                   </div>
 
@@ -1074,11 +1030,10 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
                     <div>
 
-                      <strong>BLE Proximity</strong>
+                      <strong>Dynamic QR Verification</strong>
 
                       <p>
-                        Confirm the student is near the
-                        classroom beacon.
+                        Validate the active session token with the server.
                       </p>
 
                     </div>
@@ -1091,10 +1046,10 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
                     <div>
 
-                      <strong>Face Liveness</strong>
+                      <strong>Face Match and Action Checks</strong>
 
                       <p>
-                        Verify the student's live presence.
+                        Match the enrolled face and check prompted movements.
                       </p>
 
                     </div>
@@ -1135,14 +1090,13 @@ function ProfessorDashboard({ professorId, onLogout }) {
                   <h2>Live Attendance Roster</h2>
 
                   <p>
-                    Monitor attendance recorded during
-                    this demo session.
+                    Monitor attendance recorded during this session.
                   </p>
 
                 </div>
 
                 <span className="roster-count">
-                  {presentCount} / {selectedClass.students} Present
+                  {presentCount} / {currentClass.students} Present
                 </span>
 
               </div>
@@ -1156,9 +1110,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                   <h3>No attendance recorded yet</h3>
 
                   <p>
-                    Student records will appear here after
-                    successful verification and backend
-                    integration.
+                    Students who complete attendance will appear here.
                   </p>
 
                 </div>
@@ -1207,29 +1159,6 @@ function ProfessorDashboard({ professorId, onLogout }) {
                     </tbody>
 
                   </table>
-
-                </div>
-
-              )}
-
-              {/* Demo-only control */}
-
-              {sessionActive && (
-
-                <div className="demo-controls">
-
-                  <p>
-                    Development preview only — this button
-                    simulates a recorded student.
-                  </p>
-
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={addDemoAttendance}
-                  >
-                    + Add Demo Attendance
-                  </button>
 
                 </div>
 

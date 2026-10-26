@@ -6,6 +6,26 @@
   font-family: Inter, Arial, sans-serif;
 }
 
+.schedule-editor {
+  grid-column: 1 / -1;
+  padding: 22px;
+  border: 1px solid #e2e6f0;
+  border-radius: 14px;
+  background: #fff;
+}
+.schedule-editor h3 { margin: 0 0 18px; }
+.schedule-editor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.schedule-editor-grid label { display: grid; gap: 6px; color: #58647a; font-size: 12px; font-weight: 700; }
+.schedule-editor-grid input { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid #dfe3ec; border-radius: 8px; color: #182238; background: #fff; }
+.schedule-editor-grid .enrollment-list-field { grid-column: 1 / -1; }
+.schedule-editor-grid .enrollment-list-field small { color: #7b8498; font-weight: 500; }
+.schedule-days { display: flex; flex-wrap: wrap; gap: 14px; margin: 18px 0; border: 0; padding: 0; }
+.schedule-days legend { margin-bottom: 8px; color: #58647a; font-size: 12px; font-weight: 700; }
+.schedule-days label { display: flex; gap: 5px; align-items: center; font-size: 12px; }
+.schedule-editor-actions, .schedule-card-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.schedule-card-actions { margin-top: 10px; }
+@media (max-width: 600px) { .schedule-editor-grid { grid-template-columns: 1fr; } }
+
 .professor-sidebar {
   width: 250px;
   flex-shrink: 0;

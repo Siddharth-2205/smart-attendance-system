@@ -50,6 +50,14 @@
   backdrop-filter: blur(14px);
 }
 
+.success-step {
+  margin: 0 0 22px;
+  color: #818cf8;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1.4px;
+}
+
 
 /* ================================
    SUCCESS ICON

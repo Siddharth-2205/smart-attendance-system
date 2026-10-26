@@ -1,99 +1,85 @@
-# Smart Attendance System - Backend
+# Smart Attendance API
 
-REST API for the Smart Attendance System. A student's attendance is recorded only after the
-server has verified they are physically in the classroom:
+The Node.js API authenticates students and professors with account ID and password, manages rotating QR sessions, validates face-service results, and records attendance. SQLite is the canonical store for accounts, classes, enrollments, sessions, verification attempts, and attendance. Ordered transactional migrations are applied from `src/database.js`; the legacy `store.json` is imported once when needed and is no longer used afterward. Attendance records have a unique student/session constraint and foreign keys.
 
-```
-Teacher opens a session ─► Student taps "Mark Attendance"
-                                   │
-              BLE proximity ─► (Dynamic QR, optional) ─► Face liveness
-                                   │
-                         Server checks every required proof
-                                   │
-                         Attendance recorded (once per session)
-```
+Student IDs use eight characters: two admission-year digits, `BCS` (CSE), `BDA` (DSAI), or `BEC` (ECE), and a three-digit roll number. Example: `25BCS090`.
 
-* **Zero npm dependencies.** Plain Node.js (`http`, `crypto`) + the built-in SQLite module.
-* Requires **Node.js 22.13 or newer**.
+## Run locally
 
-## Quick start
+Use the repository startup scripts from PowerShell:
 
-```bash
+```powershell
 cd backend
-cp .env.example .env      # optional - defaults work for development
-npm start                 # http://localhost:4000
-npm test                  # 9 end-to-end tests against an in-memory database
+.\start.ps1
 ```
 
-On first start with an empty database, demo data is created:
+In separate terminals, start the face service and HTTPS frontend following their setup guides: [face-liveness](../face-liveness/README.md) and [frontend](../frontend/README.md). The local frontend is served at `https://localhost:5174` and proxies `/api` to the backend on port 4000. Use HTTPS for browser camera access.
 
-| Role    | Login ID                | Password                                         |
-|---------|-------------------------|--------------------------------------------------|
-| Teacher | `T001`                  | `teacher123`                                     |
-| Student | `23BCS001` … `23BCS005` | `student123` (not needed in dev mode, see below) |
+On a clean development database, the backend creates local demo accounts. Do not use development accounts or the broad local registration range outside local testing. The `backend/start.ps1` script sets `STUDENT_ROSTER_RANGE=001-300` for the requested laptop workflow. Production requires an exact institutional roster.
 
-Courses: Introduction to Programming (`CS101`), Computer Networks (`CN301`), Information Retrieval (`IR302`),
-each scheduled every day so the demo works whenever you run it. All five students are enrolled in all three.
+Student registration is restricted by the configured roster and requires a face enrollment image. Professor self-registration is disabled unless `ALLOW_SELF_SERVICE_PROFESSOR_REGISTRATION=true`; production always disables self-registration. Login always goes through the backend and verifies the stored password hash. Passwords are not returned to the frontend. Password hashes use per-account random salts; bearer tokens are stored as SHA-256 digests and expire after eight hours by default.
 
-Try it:
+## Attendance flow
 
-```bash
-# teacher logs in and opens attendance for Computer Networks (course id 2)
-T=$(curl -s localhost:4000/api/auth/login -H 'Content-Type: application/json' \
-     -d '{"loginId":"T001","password":"teacher123"}' | node -pe 'JSON.parse(require("fs").readFileSync(0)).token')
-curl -s localhost:4000/api/sessions -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"courseId":2}'
+Student login -> Dynamic QR verification -> Face verification -> Backend attendance recording -> Attendance success.
+
+- `POST /api/auth/login` authenticates a student roll number or professor ID/email and password.
+- `GET /api/auth/status` returns whether student or professor self-registration is enabled for this environment.
+- `POST /api/auth/logout` revokes the active bearer token.
+- `POST /api/attendance/attempts` starts a student-bound attempt for an active class session.
+- `GET /api/sessions/:code/qr` returns the server-generated rotating QR token.
+- `POST /api/attendance/attempts/:id/qr` validates the current QR against the active session.
+- `POST /api/attendance/attempts/:id/face` sends one camera image to the local face service for comparison with the student's encrypted enrollment, after QR verification. This is face matching only and does not detect liveness or photo/video spoofing.
+- `POST /api/attendance/attempts/:id/complete` records attendance only after required checks pass.
+- `POST /api/sessions/:code/close` ends a professor's session.
+
+BLE is not part of the student attendance progression. The scanner and face-verification implementations are documented in the frontend and face-service guides.
+
+## Production account provisioning
+
+Production requires `NODE_ENV=production`, an exact `STUDENT_ROSTER`, an exact `PROFESSOR_ROSTER`, HTTPS-only `CORS_ORIGINS`, and an initialized database. Production rejects demo accounts and any account without a valid password hash. Student and professor registration remain disabled; the backend login route still requires a valid ID and password.
+
+Create a private JSON file outside the repository with institution-approved accounts and initial passwords:
+
+```json
+{
+  "students": [{ "studentId": "25BCS090", "name": "Student Name", "password": "set-a-private-initial-password" }],
+  "professors": [{ "loginId": "faculty-id", "name": "Professor Name", "password": "set-a-private-initial-password" }]
+}
 ```
 
-The student side (login → dashboard → BLE → face → complete) is documented in [`docs/api.md`](docs/api.md),
-including ready-to-paste code for your React pages.
+Set exact allowlists and `DATA_DIR`, stop the API, then run these commands from `backend`:
 
-## How each check works
-
-| Check | What the server enforces |
-|-------|--------------------------|
-| **BLE proximity** | Client reports the beacon ID it saw + RSSI. Beacon must match the one assigned to the session, and RSSI must be ≥ `BLE_MIN_RSSI` (default −80 dBm). |
-| **Dynamic QR** | Teacher screen polls `GET /api/sessions/:code/qr`; the server mints a new token every `QR_TTL_SECONDS` (5 s). Student submits the scanned token; it must belong to that session and be unexpired (plus a small grace for network delay). |
-| **Face liveness** | Server issues a random, single-use, 30-second challenge (e.g. *blink + turn left*). The result must reference that challenge, arrive no faster than humanly possible, and meet `LIVENESS_MIN_SCORE`. |
-| **Completion** | `complete` fails unless every factor in `REQUIRED_FACTORS` is verified, the attempt hasn't timed out, and the session is still open. A DB `UNIQUE(session, student)` constraint guarantees one record per student per session, even under double-taps. |
-
-Failed verifications are written to an `audit_log` table so repeated suspicious attempts are visible.
-
-## Configuration (`.env`)
-
-See [`.env.example`](.env.example) - every option is documented there. The important ones:
-
-* `REQUIRED_FACTORS` - `ble,face` (default, matches your current UI flow) or `ble,qr,face`, etc.
-* `REQUIRE_PASSWORD` - **`false` by default so your current login screen (ID only) works. This is for development only:** anyone who knows a student ID can log in as that student. Turn it on as soon as the login page has a password field.
-* `JWT_SECRET` - **required** when `NODE_ENV=production`.
-
-## Project layout
-
-```
-backend/
-├── src/
-│   ├── server.js            HTTP server, CORS, JSON parsing, error handling
-│   ├── router.js            tiny router with role-based access
-│   ├── config.js            env loading + validation
-│   ├── db.js                SQLite schema, transactions, audit log
-│   ├── auth.js              scrypt passwords, signed tokens (HS256), login limiter
-│   ├── seed.js              demo data (`npm run seed`)
-│   ├── routes/              auth, student, attendance, teacher
-│   └── services/            ble, qr, liveness, attendance, schedule
-├── test/api.test.js
-└── docs/api.md              endpoint reference + frontend integration
+```powershell
+$env:NODE_ENV = "production"
+$env:STUDENT_ROSTER = "25BCS090"
+$env:PROFESSOR_ROSTER = "faculty-id"
+$env:DATA_DIR = "C:\secure-data\attendance"
+node .\scripts\provision-users.js init
+node .\scripts\provision-users.js import C:\secure-data\approved-users.json
 ```
 
-## Known limitations (please read before relying on this for real grading)
+For an already initialized database, skip `init` and run `import` only. Include every existing account that needs a password; importing an existing ID preserves its role and student ID, updates its password hash, and revokes its old sessions. The import validates accounts against the exact rosters and stores salted password hashes. Keep the input file private and remove it after provisioning. The API does not load `.env` files automatically; configure runtime variables in the hosting environment or secret manager.
 
-1. **Face liveness is client-reported.** Your face module doesn't exist yet, so the server accepts
-   `{ passed, score }` from the browser. The challenge/nonce/expiry logic stops *replay*, but a
-   determined user could still forge a passing result. When the real model is ready, implement it in
-   `evaluateLiveness()` in `src/services/liveness.js` (e.g. upload frames to a Python/ONNX service
-   and use its verdict) - that is the only function that needs to change.
-2. **BLE is also client-reported** (beacon ID + RSSI). A static beacon ID can be relayed by a friend inside
-   the room. Mitigations to consider later: a beacon that broadcasts a rotating code the server can check,
-   and combining BLE with the dynamic QR (`REQUIRED_FACTORS=ble,qr,face`). Also note browser support:
-   Web Bluetooth works in Chrome/Edge on Android and desktop, **not on iOS Safari**.
-3. **Dev-mode login** (see `REQUIRE_PASSWORD` above).
-4. SQLite is perfect for a single server and a class-sized load. Move to PostgreSQL if you ever need multiple servers.
-5. Run behind HTTPS in any real deployment (camera and Bluetooth APIs require a secure context anyway).
+The API creates the relational SQLite schema and records its migration version when it first opens the database. When upgrading an existing laptop database, stop the old API and make a backup of `backend/data/attendance.sqlite` (and `store.json`, if present), then start the new API. Its transactional migration imports the previous SQLite state, or the JSON file only if no SQLite state exists. It leaves the old JSON file in place as an archival copy; subsequent reads and writes use SQLite only. See [database storage](../database/README.md) for the schema and backup notes.
+
+## Environment variables
+
+- `HOST` and `PORT` configure the API listener (`0.0.0.0` and `4000` in the local script).
+- `DATA_DIR` selects the SQLite database directory.
+- `STUDENT_ROSTER` is the exact comma-separated production student allowlist.
+- `STUDENT_ROSTER_RANGE` is for local development only; production rejects it.
+- `PROFESSOR_ROSTER` is the exact comma-separated allowlist used by the production provisioning script.
+- `CORS_ORIGINS` is a comma-separated list of allowed frontend origins. Production requires HTTPS origins.
+- `FACE_SERVICE_URL` configures the private face-service endpoint.
+- `QR_TTL_SECONDS` configures the QR rotation interval (30 seconds by default).
+- `SESSION_TTL_SECONDS` configures session lifetime (eight hours by default, bounded to 10 minutes through 24 hours).
+- `ALLOW_SELF_SERVICE_PROFESSOR_REGISTRATION` enables professor registration only in local development.
+
+There are no Google OAuth credentials, callbacks, or OAuth routes in this version.
+
+## Production limitations
+
+This repository still needs deployment-specific security and operations work before production use: HTTPS reverse proxy and rate limiting, private authenticated access between the backend and face service, database backup/restore validation, and stronger biometric presentation-attack detection. The current face action checks are a prototype, not certified anti-spoofing.
+
+Run backend tests with `npm.cmd test` from `backend`. Run frontend checks with `npm.cmd run lint` and `npm.cmd run build` from `frontend`.

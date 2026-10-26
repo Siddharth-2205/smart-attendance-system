@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
+import { api } from "../api";
 import "../styles/face-liveness.css";
 
-function FaceLiveness({ className, onVerified }) {
+function FaceLiveness({ className, attemptId, onVerified }) {
   const videoRef = useRef(null);
-  const verificationTimers = useRef([]);
+  const canvasRef = useRef(null);
   const hasCompletedRef = useRef(false);
+  const inFlightRef = useRef(false);
 
+  const [hasCompleted, setHasCompleted] = useState(false);
   const [cameraStatus, setCameraStatus] = useState("requesting");
   const [verificationStatus, setVerificationStatus] = useState("ready");
   const [error, setError] = useState("");
@@ -68,12 +71,6 @@ function FaceLiveness({ className, onVerified }) {
         stream.getTracks().forEach((track) => track.stop());
       }
 
-      // Clear any pending verification timers.
-      verificationTimers.current.forEach((timer) => {
-        clearTimeout(timer);
-      });
-
-      verificationTimers.current = [];
     };
   }, []);
 
@@ -81,44 +78,50 @@ function FaceLiveness({ className, onVerified }) {
   // START FACE VERIFICATION
   // ==========================================
 
-  const startFaceVerification = () => {
+  const startFaceVerification = async () => {
     if (
       cameraStatus !== "ready" ||
       verificationStatus !== "ready" ||
-      hasCompletedRef.current
+      hasCompletedRef.current ||
+      inFlightRef.current
     ) {
       return;
     }
 
+    inFlightRef.current = true;
     setVerificationStatus("verifying");
     setError("");
 
-    // IMPORTANT:
-    // This is a temporary simulation.
-    // Actual face-liveness detection has not been implemented.
-
-    const verificationTimer = setTimeout(() => {
-      setVerificationStatus("verified");
-    }, 3000);
-
-    const completionTimer = setTimeout(() => {
-      if (hasCompletedRef.current) {
-        return;
-      }
-
+    try {
+      const video = videoRef.current;
+      if (!video || video.readyState < 2) throw new Error("Camera is not ready. Please try again.");
+      const canvas = canvasRef.current;
+      const width = Math.min(video.videoWidth, 640);
+      if (!width || !video.videoHeight) throw new Error("Camera is not ready. Please try again.");
+      const height = Math.round((video.videoHeight / video.videoWidth) * width);
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      context.save();
+      context.translate(width, 0);
+      context.scale(-1, 1);
+      context.drawImage(video, 0, 0, width, height);
+      context.restore();
+      const image = canvas.toDataURL("image/jpeg", 0.7);
+      await api(`/api/attendance/attempts/${attemptId}/face`, {
+        method: "POST",
+        body: { image },
+      });
+      if (typeof onVerified === "function") await onVerified();
       hasCompletedRef.current = true;
-
-      // Notify App.jsx that the face verification step is complete.
-      // App.jsx should navigate to the Dynamic QR Verification page.
-      if (typeof onVerified === "function") {
-        onVerified();
-      }
-    }, 4500);
-
-    verificationTimers.current.push(
-      verificationTimer,
-      completionTimer
-    );
+      setHasCompleted(true);
+      setVerificationStatus("verified");
+    } catch (err) {
+      setError(err.message);
+      setVerificationStatus("ready");
+    } finally {
+      inFlightRef.current = false;
+    }
   };
 
   // ==========================================
@@ -187,14 +190,13 @@ function FaceLiveness({ className, onVerified }) {
 
             <div>
               <span className="face-eyebrow">
-                STEP 2 OF 3
+                STEP 3 OF 4
               </span>
 
               <h1>Verify Your Identity</h1>
 
               <p>
-                Look directly at the camera to verify that
-                you are physically present.
+                Look at the camera to compare your face with your enrollment.
               </p>
             </div>
 
@@ -221,6 +223,7 @@ function FaceLiveness({ className, onVerified }) {
             muted
             className="camera-preview"
           />
+          <canvas ref={canvasRef} hidden />
 
           {/* Camera loading */}
 
@@ -269,11 +272,6 @@ function FaceLiveness({ className, onVerified }) {
                 <div className="face-scan-line"></div>
               </div>
 
-              <div className="camera-live-badge">
-                <span></span>
-                LIVE
-              </div>
-
               <div className="face-position-label">
                 Keep your face centered
               </div>
@@ -289,7 +287,7 @@ function FaceLiveness({ className, onVerified }) {
               </div>
 
               <strong>
-                Liveness Verified
+                  Face Match Verified
               </strong>
 
               <span>
@@ -312,7 +310,7 @@ function FaceLiveness({ className, onVerified }) {
                 </strong>
 
                 <span>
-                  Position your face inside the camera frame.
+                    Your camera image will be compared with your enrolled face.
                 </span>
               </div>
             </div>
@@ -372,11 +370,12 @@ function FaceLiveness({ className, onVerified }) {
             {/* Start button */}
 
             {cameraStatus === "ready" && (
+              <>
               <button
                 type="button"
                 className="face-button"
                 onClick={startFaceVerification}
-                disabled={hasCompletedRef.current}
+                disabled={hasCompleted}
               >
                 <span>
                   Start Face Verification
@@ -386,6 +385,10 @@ function FaceLiveness({ className, onVerified }) {
                   →
                 </span>
               </button>
+              <p className="face-status">
+                Face matching does not detect photo or video spoofing.
+              </p>
+              </>
             )}
           </>
         )}
@@ -402,11 +405,11 @@ function FaceLiveness({ className, onVerified }) {
 
               <div>
                 <h3>
-                  Verifying your presence
+                  Verifying your face
                 </h3>
 
                 <p>
-                  Keep your face visible and stay still.
+                  Comparing the captured face with your enrollment.
                 </p>
               </div>
 
@@ -415,7 +418,7 @@ function FaceLiveness({ className, onVerified }) {
             <div className="verification-progress">
               <div className="verification-progress-header">
                 <span>
-                  Liveness detection
+                  Face match
                 </span>
 
                 <span>
@@ -430,6 +433,10 @@ function FaceLiveness({ className, onVerified }) {
           </div>
         )}
 
+        {error && verificationStatus !== "error" && (
+          <p className="face-status error" role="alert">{error}</p>
+        )}
+
         {/* VERIFIED STATE */}
 
         {verificationStatus === "verified" && (
@@ -439,7 +446,7 @@ function FaceLiveness({ className, onVerified }) {
             </h3>
 
             <p>
-              Proceeding to Dynamic QR Verification...
+              Submitting attendance for confirmation...
             </p>
           </div>
         )}

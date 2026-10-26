@@ -1,61 +1,88 @@
-import { useState, useCallback } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { api, logout } from "./api";
 
-import Login from "./pages/Login";
-import Dashboard from "./pages/Dashboard";
-import BleVerification from "./pages/BleVerification";
-import FaceLiveness from "./pages/FaceLiveness";
-import StudentQRVerification from "./pages/StudentQRVerification";
-import AttendanceSuccess from "./pages/AttendanceSuccess";
+const Login = lazy(() => import("./pages/Login"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const FaceLiveness = lazy(() => import("./pages/FaceLiveness"));
+const StudentQRVerification = lazy(() => import("./pages/StudentQRVerification"));
+const AttendanceSuccess = lazy(() => import("./pages/AttendanceSuccess"));
+const ProfessorLogin = lazy(() => import("./pages/ProfessorLogin"));
+const ProfessorDashboard = lazy(() => import("./pages/ProfessorDashboard"));
 
-import ProfessorLogin from "./pages/ProfessorLogin";
-import ProfessorDashboard from "./pages/ProfessorDashboard";
+const PageFallback = () => <main className="login-page" role="status">Loading…</main>;
 
 function App() {
-  const [studentId, setStudentId] = useState("");
-  const [selectedClass, setSelectedClass] = useState("");
-  const [currentPage, setCurrentPage] = useState("login");
+  const savedUser = (() => { try { return JSON.parse(sessionStorage.getItem("user") || "null"); } catch { return null; } })();
+  const [studentId, setStudentId] = useState(savedUser?.role === "student" ? savedUser.loginId : "");
+  const [selectedClass, setSelectedClass] = useState(null);
+  const [attempt, setAttempt] = useState(null);
+  const initialPage = savedUser?.role === "student" ? "dashboard" : savedUser?.role === "professor" ? "professor-dashboard" : "login";
+  const [currentPage, setCurrentPage] = useState(initialPage);
 
-  const [professorId, setProfessorId] = useState("");
+  const [professorId, setProfessorId] = useState(savedUser?.role === "professor" ? savedUser.loginId : "");
 
   const [verifiedQR, setVerifiedQR] = useState(null);
+  const [authError, setAuthError] = useState("");
+
+  useEffect(() => {
+    const handleExpiredSession = (event) => {
+      setCurrentPage(event.detail?.role === "professor" ? "professor-login" : "login");
+      setStudentId("");
+      setProfessorId("");
+      setSelectedClass(null);
+      setAttempt(null);
+      setVerifiedQR(null);
+      setAuthError("Your sign-in expired. Please sign in again.");
+    };
+    window.addEventListener("attendance-auth-expired", handleExpiredSession);
+    return () => window.removeEventListener("attendance-auth-expired", handleExpiredSession);
+  }, []);
 
   // ==========================================
   // STUDENT FLOW
   // ==========================================
 
-  const handleLogin = (id) => {
-    setStudentId(id);
+  const handleLogin = (user) => {
+    setStudentId(user.loginId);
     setCurrentPage("dashboard");
   };
 
-  const handleAttendance = (className) => {
-    setSelectedClass(className);
-    setVerifiedQR(null);
-    setCurrentPage("ble");
+  const handleAttendance = async (course) => {
+    try {
+      const nextAttempt = await api("/api/attendance/attempts", {
+        method: "POST",
+        body: { courseId: course.courseId },
+      });
+      setSelectedClass(course);
+      setAttempt(nextAttempt);
+      setVerifiedQR(null);
+      setCurrentPage("qr");
+    } catch (error) {
+      window.alert(error.message);
+    }
   };
 
-  // BLE verified -> Face verification
-  const handleBleVerified = () => {
+  const handleQRVerified = (qrData) => {
+    setVerifiedQR(qrData);
     setCurrentPage("face");
   };
 
-  // Face verified -> QR verification
-  const handleFaceVerified = () => {
-    setCurrentPage("qr");
+  const finishAttendance = async () => {
+    const result = await api(`/api/attendance/attempts/${attempt.attemptId}/complete`, { method: "POST" });
+    setVerifiedQR(result);
+    setCurrentPage("success");
   };
 
-  // QR verified -> Success
-  const handleQRVerified = useCallback((qrData) => {
-    setVerifiedQR(qrData);
-    setCurrentPage("success");
-  }, []);
+  const handleFaceVerified = async () => {
+    await finishAttendance();
+  };
 
   // ==========================================
   // PROFESSOR FLOW
   // ==========================================
 
   const handleProfessorLogin = (professor) => {
-    setProfessorId(professor.professorId);
+    setProfessorId(professor.loginId);
     setCurrentPage("professor-dashboard");
   };
 
@@ -66,7 +93,9 @@ function App() {
   if (currentPage === "login") {
     return (
       <div>
-        <Login onLogin={handleLogin} />
+        <Suspense fallback={<PageFallback />}>
+          <Login onLogin={handleLogin} initialError={authError} />
+        </Suspense>
 
         <div
           style={{
@@ -99,23 +128,12 @@ function App() {
 
   if (currentPage === "dashboard") {
     return (
+      <Suspense fallback={<PageFallback />}>
       <Dashboard
         studentId={studentId}
         onAttendance={handleAttendance}
       />
-    );
-  }
-
-  // ==========================================
-  // BLE VERIFICATION
-  // ==========================================
-
-  if (currentPage === "ble") {
-    return (
-      <BleVerification
-        className={selectedClass}
-        onVerified={handleBleVerified}
-      />
+      </Suspense>
     );
   }
 
@@ -125,10 +143,13 @@ function App() {
 
   if (currentPage === "face") {
     return (
+      <Suspense fallback={<PageFallback />}>
       <FaceLiveness
-        className={selectedClass}
+        className={selectedClass?.name}
+        attemptId={attempt?.attemptId}
         onVerified={handleFaceVerified}
       />
+      </Suspense>
     );
   }
 
@@ -138,10 +159,13 @@ function App() {
 
   if (currentPage === "qr") {
     return (
+      <Suspense fallback={<PageFallback />}>
       <StudentQRVerification
-        className={selectedClass}
+        className={selectedClass?.name}
+        attemptId={attempt?.attemptId}
         onVerified={handleQRVerified}
       />
+      </Suspense>
     );
   }
 
@@ -151,11 +175,12 @@ function App() {
 
   if (currentPage === "success") {
     return (
+      <Suspense fallback={<PageFallback />}>
       <AttendanceSuccess
-        className={selectedClass}
-        studentId={studentId}
-        verifiedQR={verifiedQR}
+        attendance={verifiedQR}
+        onReturn={() => { setAttempt(null); setSelectedClass(null); setCurrentPage("dashboard"); }}
       />
+      </Suspense>
     );
   }
 
@@ -165,9 +190,12 @@ function App() {
 
   if (currentPage === "professor-login") {
     return (
+      <Suspense fallback={<PageFallback />}>
       <ProfessorLogin
         onLogin={handleProfessorLogin}
+        initialError={authError}
       />
+      </Suspense>
     );
   }
 
@@ -177,13 +205,17 @@ function App() {
 
   if (currentPage === "professor-dashboard") {
     return (
+      <Suspense fallback={<PageFallback />}>
       <ProfessorDashboard
         professorId={professorId}
         onLogout={() => {
+          logout();
           setProfessorId("");
+          setStudentId("");
           setCurrentPage("login");
         }}
       />
+      </Suspense>
     );
   }
 

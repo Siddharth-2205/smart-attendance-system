@@ -1,362 +1,145 @@
 import { useEffect, useRef, useState } from "react";
 import { Html5Qrcode } from "html5-qrcode";
+import { api } from "../api";
 import "../styles/student-qr-verification.css";
 
-function StudentQRVerification({ className, onVerified }) {
+const SCANNER_ID = "student-qr-reader";
+
+function StudentQRVerification({ className, attemptId, onVerified }) {
+  const callbackRef = useRef(onVerified);
   const scannerRef = useRef(null);
   const completedRef = useRef(false);
-  const mountedRef = useRef(false);
-  const callbackRef = useRef(onVerified);
-
-  const [status, setStatus] = useState("scanning");
-  const [message, setMessage] = useState(
-    "Allow camera access and point your camera at the professor's QR code."
-  );
+  const validatingRef = useRef(false);
+  const pausedRef = useRef(false);
+  const [status, setStatus] = useState("starting");
+  const [message, setMessage] = useState("Starting the camera...");
   const [error, setError] = useState("");
-  const [decodedPreview, setDecodedPreview] = useState("");
+  const [scanCycle, setScanCycle] = useState(0);
 
-  // Keep the latest callback without restarting the camera.
-  useEffect(() => {
-    callbackRef.current = onVerified;
-  }, [onVerified]);
+  useEffect(() => { callbackRef.current = onVerified; }, [onVerified]);
 
   useEffect(() => {
-    let scanner;
     let disposed = false;
-    let cameraStarted = false;
+    let started = false;
+    const scanner = new Html5Qrcode(SCANNER_ID);
+    scannerRef.current = scanner;
 
-    mountedRef.current = true;
-    completedRef.current = false;
+    const stopAndClear = async () => {
+      if (started) {
+        try { await scanner.stop(); } catch { /* already stopped */ }
+        started = false;
+      }
+      try { scanner.clear(); } catch { /* already cleared */ }
+      if (scannerRef.current === scanner) scannerRef.current = null;
+    };
 
-    const readerId = "student-qr-reader";
+    const handleDecoded = async (decodedText) => {
+      if (disposed || completedRef.current || validatingRef.current || pausedRef.current) return;
+      validatingRef.current = true;
+      setStatus("validating");
+      setError("");
+      setMessage("Checking the QR code with the attendance server...");
 
-    async function startScanner() {
       try {
-        // Initialize exactly one scanner instance.
-        scanner = new Html5Qrcode(readerId);
-        scannerRef.current = scanner;
+        let payload;
+        try { payload = JSON.parse(decodedText); }
+        catch { throw new Error("This QR code is not a valid attendance code. Scan the current code shown by your professor."); }
+        if (typeof payload?.sessionId !== "string" || !payload.sessionId || typeof payload?.token !== "string" || !/^[a-f0-9]{48}$/i.test(payload.token)) {
+          throw new Error("This QR code is malformed. Scan the current attendance code shown by your professor.");
+        }
+        const result = await api(`/api/attendance/attempts/${encodeURIComponent(attemptId)}/qr`, {
+          method: "POST",
+          body: { sessionId: payload.sessionId, token: payload.token },
+        });
+        if (disposed) return;
+        completedRef.current = true;
+        setStatus("verified");
+        setMessage("QR verified. Continue to face verification.");
+        await stopAndClear();
+        await callbackRef.current?.({ ...result, sessionId: payload.sessionId });
+      } catch (err) {
+        if (disposed) return;
+        pausedRef.current = true;
+        setStatus("error");
+      setError(err.message || "The QR code could not be verified.");
+        setMessage("The camera is still active. Scan a current code or try again.");
+      } finally {
+        validatingRef.current = false;
+      }
+    };
 
-        setStatus("scanning");
-        setError("");
-        setMessage("Starting camera...");
-
-        const config = {
-          fps: 15,
-          qrbox: (viewfinderWidth, viewfinderHeight) => {
-            const size = Math.floor(
-              Math.min(viewfinderWidth, viewfinderHeight) * 0.8
-            );
-
-            return {
-              width: Math.min(size, 350),
-              height: Math.min(size, 350),
-            };
-          },
-          aspectRatio: 1,
-          disableFlip: false,
-        };
-
+    async function start() {
+      try {
         await scanner.start(
           { facingMode: "environment" },
-          config,
-
-          // This function runs when a QR code is decoded.
-          async (decodedText) => {
-            if (disposed || completedRef.current) {
-              return;
-            }
-
-            console.log("QR CODE DETECTED:", decodedText);
-
-            setDecodedPreview(
-              decodedText.length > 120
-                ? decodedText.slice(0, 120) + "..."
-                : decodedText
-            );
-
-            let qrData;
-
-            // Step 1: Parse the QR payload.
-            try {
-              qrData = JSON.parse(decodedText);
-            } catch {
-              setStatus("error");
-              setError(
-                "The camera detected a QR code, but its contents are not JSON."
-              );
-              setMessage(
-                "Make sure you are scanning the dynamic attendance QR displayed by your professor."
-              );
-              return;
-            }
-
-            console.log("DECODED QR DATA:", qrData);
-
-            // Step 2: Validate the required attendance fields.
-            if (
-              !qrData.sessionId ||
-              !qrData.token ||
-              !qrData.issuedAt ||
-              !qrData.expiresAt
-            ) {
-              setStatus("error");
-              setError(
-                "QR detected, but required attendance fields are missing."
-              );
-              setMessage(
-                "Check whether the professor's QR generator uses the expected payload format."
-              );
-              return;
-            }
-
-            // Step 3: Parse timestamps.
-            function parseTimestamp(value) {
-              if (typeof value === "number") {
-                return value;
-              }
-
-              if (typeof value === "string") {
-                // Support numeric timestamps represented as strings.
-                if (/^\d+$/.test(value)) {
-                  const numericValue = Number(value);
-
-                  // Treat 10-digit Unix timestamps as seconds.
-                  return value.length <= 10
-                    ? numericValue * 1000
-                    : numericValue;
-                }
-
-                return Date.parse(value);
-              }
-
-              return NaN;
-            }
-
-            const now = Date.now();
-            const issuedAt = parseTimestamp(qrData.issuedAt);
-            const expiresAt = parseTimestamp(qrData.expiresAt);
-
-            if (
-              !Number.isFinite(issuedAt) ||
-              !Number.isFinite(expiresAt)
-            ) {
-              setStatus("error");
-              setError("The QR code contains invalid timestamps.");
-              setMessage(
-                "Check the issuedAt and expiresAt values generated by the professor dashboard."
-              );
-              return;
-            }
-
-            if (
-              issuedAt > now + 5000 ||
-              expiresAt <= now ||
-              expiresAt <= issuedAt
-            ) {
-              setStatus("error");
-              setError("The QR code has expired or has invalid timestamps.");
-              setMessage(
-                "Wait for the professor's latest QR code and scan it again."
-              );
-              return;
-            }
-
-            // Step 4: Prevent multiple successful callbacks.
-            completedRef.current = true;
-
-            setStatus("verified");
-            setError("");
-            setMessage("QR verified. Completing attendance...");
-
-            // Stop the camera before navigating.
-            try {
-              if (cameraStarted) {
-                await scanner.stop();
-                cameraStarted = false;
-              }
-            } catch (stopError) {
-              console.warn("Camera cleanup:", stopError);
-            }
-
-            if (!disposed && callbackRef.current) {
-              callbackRef.current(qrData);
-            }
-          },
-
-          // A QR not being visible in a frame is normal.
+          { fps: 12, aspectRatio: 1, qrbox: (width, height) => {
+            const size = Math.min(320, Math.floor(Math.min(width, height) * 0.8));
+            return { width: size, height: size };
+          } },
+          handleDecoded,
           () => {}
         );
-
-        cameraStarted = true;
-
-        if (!disposed) {
-          setMessage(
-            "Camera ready. Point it directly at the professor's QR code."
-          );
+        started = true;
+        if (disposed) await stopAndClear();
+        else {
+          setStatus("scanning");
+          setMessage("Point your camera at the professor's current QR code.");
         }
       } catch (err) {
-        console.error("QR scanner initialization failed:", err);
-
-        if (!disposed) {
-          setStatus("error");
-
-          setError(
-            "Unable to start the camera or initialize the QR scanner."
-          );
-
-          setMessage(
-            "Allow camera access, close other camera apps, and try again."
-          );
-        }
+        if (disposed) return;
+        setStatus("error");
+        setError(err.name === "NotAllowedError" ? "Camera permission was denied. Allow camera access and retry." : "Unable to start the QR camera. Close other camera apps and retry.");
+        setMessage("QR scanning needs camera permission and a secure browser context.");
+        await stopAndClear();
       }
     }
 
-    startScanner();
-
+    start();
     return () => {
       disposed = true;
-      mountedRef.current = false;
-
-      if (scanner) {
-        const cleanup = async () => {
-          try {
-            if (cameraStarted) {
-              await scanner.stop();
-            }
-          } catch {
-            // The camera may already be stopped.
-          }
-
-          try {
-            scanner.clear();
-          } catch {
-            // The scanner may already be cleared.
-          }
-
-          if (scannerRef.current === scanner) {
-            scannerRef.current = null;
-          }
-        };
-
-        cleanup();
-      }
+      void stopAndClear();
     };
-  }, []);
+  }, [attemptId, scanCycle]);
 
-  function retryScanning() {
-    window.location.reload();
-  }
+  const retry = () => {
+    completedRef.current = false;
+    pausedRef.current = false;
+    setError("");
+    if (scannerRef.current) {
+      setStatus("scanning");
+      setMessage("Point your camera at the professor's current QR code.");
+      return;
+    }
+    setStatus("starting");
+    setMessage("Restarting the camera...");
+    setScanCycle((cycle) => cycle + 1);
+  };
 
   return (
     <main className="qr-verification-page">
       <section className="qr-verification-card">
         <header className="qr-header">
           <div className="qr-icon">▦</div>
-
           <div>
-            <span className="qr-step">STEP 3 OF 3</span>
-
-            <h1>Verify Attendance</h1>
-
-            <p>
-              Scan the professor's rotating QR code to complete
-              your attendance verification.
-            </p>
+            <span className="qr-step">STEP 2 OF 4</span>
+            <h1>Scan Attendance QR</h1>
+            <p>Scan the professor's rotating code. The server checks that it belongs to this active class session.</p>
           </div>
         </header>
 
-        <div className="qr-class-info">
-          <span>CLASS</span>
-          <strong>{className || "Selected class"}</strong>
-        </div>
-
+        <div className="qr-class-info"><span>CLASS</span><strong>{className || "Selected class"}</strong></div>
         <div className="qr-scanner-panel">
-          {status === "scanning" && (
-            <div className="qr-scanner-heading">
-              <span className="qr-live-dot" />
-              Camera scanner ready
-            </div>
-          )}
-
-          <div
-            id="student-qr-reader"
-            className="student-qr-reader"
-          />
-
-          {status === "scanning" && (
-            <p className="qr-scanner-status">
-              {message}
-            </p>
-          )}
-
-          {status === "verified" && (
-            <div className="qr-result qr-result-success">
-              <div className="qr-result-icon">✓</div>
-
-              <h2>QR Verified!</h2>
-
-              <p>{message}</p>
-            </div>
-          )}
-
-          {status === "error" && (
-            <div className="qr-result qr-result-error">
-              <div className="qr-result-icon">!</div>
-
-              <h2>Verification Failed</h2>
-
-              <p>{error}</p>
-              <p>{message}</p>
-
-              {decodedPreview && (
-                <details>
-                  <summary>Inspect detected QR data</summary>
-                  <code>{decodedPreview}</code>
-                </details>
-              )}
-
-              <button
-                type="button"
-                className="qr-retry-button"
-                onClick={retryScanning}
-              >
-                Try Again
-              </button>
-            </div>
-          )}
+          {(status === "scanning" || status === "starting" || status === "validating") && <div className="qr-scanner-heading"><span className="qr-live-dot" />{status === "validating" ? "Validating QR" : status === "starting" ? "Starting camera" : "Camera scanner ready"}</div>}
+          <div id={SCANNER_ID} className="student-qr-reader" />
+          <p className="qr-scanner-status" role="status">{message}</p>
+          {status === "verified" && <div className="qr-result qr-result-success"><div className="qr-result-icon">✓</div><h2>QR Verified</h2><p>{message}</p></div>}
+          {status === "error" && <div className="qr-result qr-result-error"><div className="qr-result-icon">!</div><h2>Could not verify QR</h2><p>{error}</p><button type="button" className="qr-retry-button" onClick={retry}>Scan again</button></div>}
         </div>
-
-        {status === "scanning" && (
-          <div className="qr-instructions">
-            <h3>How to scan</h3>
-
-            <p>
-              1. Ask your professor to start the attendance session.
-            </p>
-
-            <p>
-              2. Point your camera directly at the displayed QR code.
-            </p>
-
-            <p>
-              3. Keep the QR code inside the camera frame.
-            </p>
-
-            <p>
-              4. Ensure the QR code is clear, well-lit, and large enough
-              to scan.
-            </p>
-          </div>
-        )}
-
-        <div className="qr-security-note">
-          <span>●</span>
-          Dynamic QR verification
-        </div>
+        <div className="qr-instructions"><h3>Before you scan</h3><p>Ask your professor to start the attendance session and display its current QR code.</p><p>Keep the code clear, well-lit, and inside the camera frame.</p></div>
+        <div className="qr-security-note"><span>●</span> QR token is verified by the attendance server</div>
       </section>
     </main>
   );
 }
 
 export default StudentQRVerification;
-
