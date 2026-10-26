@@ -26,18 +26,23 @@ Student login -> Dynamic QR verification -> Face verification -> Backend attenda
 - `POST /api/auth/login` authenticates a student roll number or professor ID/email and password.
 - `GET /api/auth/status` returns whether student or professor self-registration is enabled for this environment.
 - `POST /api/auth/logout` revokes the active bearer token.
+- `GET /api/teacher/attendance-sessions` lists sessions belonging to the signed-in professor, with class and attendance totals.
+- `GET /api/teacher/students/range?from=25BCS001&to=25BCS300` returns registered student IDs in an inclusive roll-number range within one admission year and department; it is professor-only.
+- `GET /api/sessions/:code/attendance` returns the authorized session roster and recorded attendance. The professor dashboard uses it to download an Excel workbook after the session is closed.
 - `POST /api/attendance/attempts` starts a student-bound attempt for an active class session.
 - `GET /api/sessions/:code/qr` returns the server-generated rotating QR token.
 - `POST /api/attendance/attempts/:id/qr` validates the current QR against the active session.
-- `POST /api/attendance/attempts/:id/face` sends one camera image to the local face service for comparison with the student's encrypted enrollment, after QR verification. This is face matching only and does not detect liveness or photo/video spoofing.
+- `POST /api/attendance/attempts/:id/face/challenge` creates a short-lived server challenge after QR verification; `POST /api/attendance/attempts/:id/face` submits 10–16 camera frames for the face service's prompted blink check and enrolled-face match.
 - `POST /api/attendance/attempts/:id/complete` records attendance only after required checks pass.
 - `POST /api/sessions/:code/close` ends a professor's session.
+
+Session roster membership is snapshotted when the professor starts attendance. The export keeps those students even if class enrollment is edited later; present students are sorted by ID first and absentees are listed in a separate section at the end.
 
 BLE is not part of the student attendance progression. The scanner and face-verification implementations are documented in the frontend and face-service guides.
 
 ## Production account provisioning
 
-Production requires `NODE_ENV=production`, an exact `STUDENT_ROSTER`, an exact `PROFESSOR_ROSTER`, HTTPS-only `CORS_ORIGINS`, and an initialized database. Production rejects demo accounts and any account without a valid password hash. Student and professor registration remain disabled; the backend login route still requires a valid ID and password.
+Production requires `NODE_ENV=production`, an exact `STUDENT_ROSTER`, an exact `PROFESSOR_ROSTER`, HTTPS-only `CORS_ORIGINS`, and persistent database storage. Production rejects demo accounts and any account without a valid password hash. Student and professor registration remain disabled; the backend login route still requires a valid ID and password. A fresh hosted database may start with zero accounts so the approved provisioning command can be run through the host's private service shell; until then `/api/health` reports `accountsProvisioned: false` and no login can succeed.
 
 Create a private JSON file outside the repository with institution-approved accounts and initial passwords:
 
@@ -72,14 +77,16 @@ The API creates the relational SQLite schema and records its migration version w
 - `PROFESSOR_ROSTER` is the exact comma-separated allowlist used by the production provisioning script.
 - `CORS_ORIGINS` is a comma-separated list of allowed frontend origins. Production requires HTTPS origins.
 - `FACE_SERVICE_URL` configures the private face-service endpoint.
-- `QR_TTL_SECONDS` configures the QR rotation interval (30 seconds by default).
+- `FACE_SERVICE_HOSTPORT` configures a private service address as `host:port` when the host provides that value separately; `FACE_SERVICE_URL` takes precedence when both are set.
+- `FACE_SERVICE_TOKEN` is a random secret of at least 32 characters, configured identically in the backend and face service. It authenticates backend requests to enrollment, enrolled-status, and verification endpoints. Keep the face service on private networking and do not expose its public URL.
+- `QR_TTL_SECONDS` sets the default rotation interval for new classes (5 seconds by default). Professors can select a per-class QR validity from 5 to 120 seconds in the class editor; it is saved in SQLite and used by that class's attendance sessions.
 - `SESSION_TTL_SECONDS` configures session lifetime (eight hours by default, bounded to 10 minutes through 24 hours).
 - `ALLOW_SELF_SERVICE_PROFESSOR_REGISTRATION` enables professor registration only in local development.
 
 There are no Google OAuth credentials, callbacks, or OAuth routes in this version.
 
-## Production limitations
+## Production security notes
 
-This repository still needs deployment-specific security and operations work before production use: HTTPS reverse proxy and rate limiting, private authenticated access between the backend and face service, database backup/restore validation, and stronger biometric presentation-attack detection. The current face action checks are a prototype, not certified anti-spoofing.
+Production startup requires an absolute persistent `DATA_DIR`, exactly one HTTPS `CORS_ORIGINS` origin, an exact `STUDENT_ROSTER`, a private face-service URL, and a shared `FACE_SERVICE_TOKEN` with at least 32 characters. Production rejects roster ranges and demo accounts. Login failures are rate-limited per account in process memory (10 failures per 15 minutes); use the hosting provider's edge protections as an additional control. Keep one backend replica when using SQLite and back up the database before moving or changing storage. The face service must use a private network address and persistent `FACE_DATA_DIR`; its health route does not require the shared token, so do not publish that service. The prompted blink is a basic liveness cue, not robust presentation-attack detection; replayed video may pass.
 
 Run backend tests with `npm.cmd test` from `backend`. Run frontend checks with `npm.cmd run lint` and `npm.cmd run build` from `frontend`.

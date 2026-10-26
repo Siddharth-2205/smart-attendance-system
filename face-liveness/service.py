@@ -1,10 +1,13 @@
-"""Local face enrollment and identity matching service."""
+"""Local face enrollment, blink liveness cue, and identity matching service."""
 
 import base64
 import binascii
+import hmac
 import io
 import json
+import math
 import os
+import statistics
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -12,7 +15,7 @@ from pathlib import Path
 import face_recognition
 import numpy as np
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from PIL import Image, UnidentifiedImageError
 
@@ -20,8 +23,22 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("FACE_DATA_DIR", ROOT / "data"))
 DB_PATH = DATA_DIR / "templates.sqlite"
 TEMPLATE_KEY_HEX = os.environ.get("FACE_TEMPLATE_KEY", "")
+FACE_SERVICE_TOKEN = os.environ.get("FACE_SERVICE_TOKEN", "")
+PRODUCTION = os.environ.get("NODE_ENV") == "production"
+if PRODUCTION and len(FACE_SERVICE_TOKEN) < 32:
+    raise RuntimeError("Configure a private FACE_SERVICE_TOKEN with at least 32 characters.")
+if PRODUCTION and (not os.environ.get("FACE_DATA_DIR") or not Path(DATA_DIR).is_absolute()):
+    raise RuntimeError("Production FACE_DATA_DIR must point to an absolute persistent-storage path.")
 
 app = FastAPI(title="Smart Attendance Face Service", docs_url=None, redoc_url=None)
+
+
+def require_backend(authorization: str | None = Header(default=None)) -> None:
+    if not FACE_SERVICE_TOKEN and not PRODUCTION:
+        return
+    supplied = authorization.removeprefix("Bearer ") if authorization else ""
+    if not hmac.compare_digest(supplied.encode("utf-8"), FACE_SERVICE_TOKEN.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Backend service authentication is required.")
 
 
 class Enrollment(BaseModel):
@@ -31,7 +48,8 @@ class Enrollment(BaseModel):
 
 class Verification(BaseModel):
     studentId: str = Field(min_length=1, max_length=32)
-    image: str = Field(min_length=20, max_length=1_500_000)
+    frames: list[str] = Field(min_length=10, max_length=16)
+    promptFrame: int = Field(ge=4, le=6)
 
 
 def connect() -> sqlite3.Connection:
@@ -45,12 +63,21 @@ def connect() -> sqlite3.Connection:
 
 def template_cipher() -> AESGCM:
     try:
+        # Accept the existing 64-character hex keys and Render's generated
+        # URL-safe base64 secrets (32 random bytes) without storing either in code.
         key = bytes.fromhex(TEMPLATE_KEY_HEX)
     except ValueError:
-        key = b""
+        try:
+            key = base64.urlsafe_b64decode(TEMPLATE_KEY_HEX + "=" * (-len(TEMPLATE_KEY_HEX) % 4))
+        except (ValueError, binascii.Error):
+            key = b""
     if len(key) != 32:
         raise HTTPException(status_code=503, detail="Face template encryption is not configured.")
     return AESGCM(key)
+
+
+if PRODUCTION:
+    template_cipher()
 
 
 def encrypt_template(student_id: str, encoding: np.ndarray) -> bytes:
@@ -91,19 +118,44 @@ def face_encoding(data_url: str) -> np.ndarray:
     return encodings[0]
 
 
+def eye_aspect_ratio(points: list[tuple[int, int]]) -> float:
+    """Measure eye openness from the six landmarks returned by dlib."""
+    if len(points) != 6:
+        return 0.0
+    vertical_a = math.dist(points[1], points[5])
+    vertical_b = math.dist(points[2], points[4])
+    horizontal = math.dist(points[0], points[3])
+    return (vertical_a + vertical_b) / (2.0 * horizontal) if horizontal else 0.0
+
+
+def frame_eyes(data_url: str):
+    image = image_array(data_url)
+    locations = face_recognition.face_locations(image, model="hog")
+    if len(locations) != 1:
+        return None
+    landmarks = face_recognition.face_landmarks(image, face_locations=locations)
+    if len(landmarks) != 1:
+        return None
+    left = landmarks[0].get("left_eye", [])
+    right = landmarks[0].get("right_eye", [])
+    if len(left) != 6 or len(right) != 6:
+        return None
+    return (eye_aspect_ratio(left), eye_aspect_ratio(right)), image, locations[0]
+
+
 def fail(status: int, message: str):
     raise HTTPException(status_code=status, detail=message)
 
 
 @app.get("/enrolled/{student_id}")
-def enrolled(student_id: str):
+def enrolled(student_id: str, _auth: None = Depends(require_backend)):
     with closing(connect()) as connection:
         exists = connection.execute("SELECT 1 FROM face_templates WHERE student_id=?", (student_id,)).fetchone()
     return {"enrolled": bool(exists)}
 
 
 @app.post("/enroll")
-def enroll(request: Enrollment):
+def enroll(request: Enrollment, _auth: None = Depends(require_backend)):
     encoding = face_encoding(request.image)
     with closing(connect()) as connection:
         connection.execute(
@@ -115,16 +167,52 @@ def enroll(request: Enrollment):
 
 
 @app.post("/verify")
-def verify(request: Verification):
+def verify(request: Verification, _auth: None = Depends(require_backend)):
     with closing(connect()) as connection:
         row = connection.execute("SELECT encoding FROM face_templates WHERE student_id=?", (request.studentId,)).fetchone()
     if not row:
         fail(409, "No face enrollment exists for this account.")
     enrolled = decrypt_template(request.studentId, row[0])
-    encoding = face_encoding(request.image)
+    measurements = []
+    for index, frame in enumerate(request.frames):
+        try:
+            result = frame_eyes(frame)
+        except HTTPException:
+            result = None
+        measurements.append((index, result))
+
+    baseline = [result[0] for index, result in measurements if index < request.promptFrame and result is not None]
+    if len(baseline) < 3:
+        fail(422, "Keep one clear face centered in the camera before blinking.")
+    baseline_left = statistics.median(value[0] for value in baseline)
+    baseline_right = statistics.median(value[1] for value in baseline)
+    if min(baseline_left, baseline_right) < 0.12:
+        fail(422, "Keep both eyes open and visible before the blink prompt.")
+
+    saw_closed = False
+    reopened_location = None
+    for index, result in measurements:
+        if index < request.promptFrame or result is None:
+            continue
+        (left, right), image, location = result
+        open_eyes = left >= baseline_left * 0.82 and right >= baseline_right * 0.82
+        closed_eyes = left <= baseline_left * 0.72 and right <= baseline_right * 0.72
+        if closed_eyes:
+            saw_closed = True
+        elif saw_closed and open_eyes:
+            reopened_location = (image, location)
+            break
+
+    if reopened_location is None:
+        fail(422, "Blink once when prompted, then keep your eyes open and try again.")
+    image, location = reopened_location
+    encodings = face_recognition.face_encodings(image, known_face_locations=[location], num_jitters=1)
+    if len(encodings) != 1:
+        fail(422, "The face could not be analyzed. Improve the lighting and try again.")
+    encoding = encodings[0]
     if float(face_recognition.face_distance([enrolled], encoding)[0]) > 0.50:
         fail(403, "The face does not match the student enrollment.")
-    return {"verified": True}
+    return {"verified": True, "blinkVerified": True}
 
 
 @app.get("/health")

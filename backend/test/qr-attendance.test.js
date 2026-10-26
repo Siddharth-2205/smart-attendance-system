@@ -22,17 +22,22 @@ async function freePort() {
 test("server-issued QR tokens gate face verification and attendance", async (t) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "attendance-qr-api-"));
   const port = await freePort();
+  const faceToken = "test-only-face-service-token-32-bytes";
+  let blinkPass = true;
   const faceServer = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const payload = raw ? JSON.parse(raw) : {};
     res.writeHead(200, { "Content-Type": "application/json" });
-    if (req.url === "/verify") res.end(JSON.stringify({ verified: true, studentId: payload.studentId }));
+    if (req.url === "/verify") {
+      assert.equal(req.headers.authorization, `Bearer ${faceToken}`);
+      res.end(JSON.stringify({ verified: true, blinkVerified: blinkPass, studentId: payload.studentId }));
+    }
     else res.end(JSON.stringify({ enrolled: true }));
   });
   await new Promise((resolve) => faceServer.listen(0, "127.0.0.1", resolve));
   let child = spawn(process.execPath, ["src/server.js"], {
     cwd: backendDir,
-    env: { ...process.env, HOST: "127.0.0.1", PORT: String(port), DATA_DIR: dataDir, QR_TTL_SECONDS: "10", CORS_ORIGINS: "http://trusted.test", FACE_SERVICE_URL: `http://127.0.0.1:${faceServer.address().port}` },
+    env: { ...process.env, HOST: "127.0.0.1", PORT: String(port), DATA_DIR: dataDir, QR_TTL_SECONDS: "10", CORS_ORIGINS: "http://trusted.test", FACE_SERVICE_URL: `http://127.0.0.1:${faceServer.address().port}`, FACE_SERVICE_TOKEN: faceToken },
     stdio: "ignore",
   });
   t.after(async () => {
@@ -113,13 +118,26 @@ test("server-issued QR tokens gate face verification and attendance", async (t) 
   assert.equal(expired.response.status, 400);
   assert.equal(expired.payload.error.code, "QR_INVALID");
 
-  const face = await post(`/api/attendance/attempts/${attempt.payload.attemptId}/face`, { image }, student.payload.token);
+  const challenge = await post(`/api/attendance/attempts/${attempt.payload.attemptId}/face/challenge`, {}, student.payload.token);
+  assert.equal(challenge.response.status, 200);
+  const frames = Array.from({ length: 10 }, () => image);
+  blinkPass = false;
+  const failedFace = await post(`/api/attendance/attempts/${attempt.payload.attemptId}/face`, { challengeId: challenge.payload.challengeId, frames }, student.payload.token);
+  assert.equal(failedFace.response.status, 403);
+  assert.equal(failedFace.payload.error.code, "BLINK_NOT_DETECTED");
+  const afterFailedFaceDb = new DatabaseSync(path.join(dataDir, "attendance.sqlite"), { readOnly: true });
+  assert.equal(afterFailedFaceDb.prepare("SELECT COUNT(*) AS count FROM attendance_records").get().count, 0, "a failed blink check must not persist attendance");
+  afterFailedFaceDb.close();
+
+  const retryChallenge = await post(`/api/attendance/attempts/${attempt.payload.attemptId}/face/challenge`, {}, student.payload.token);
+  blinkPass = true;
+  const face = await post(`/api/attendance/attempts/${attempt.payload.attemptId}/face`, { challengeId: retryChallenge.payload.challengeId, frames }, student.payload.token);
   assert.equal(face.response.status, 200);
   assert.equal(face.payload.verified, true);
   const completed = await post(`/api/attendance/attempts/${attempt.payload.attemptId}/complete`, {}, student.payload.token);
   assert.equal(completed.response.status, 200);
   assert.equal(completed.payload.status, "present");
-  assert.deepEqual(completed.payload.verifiedSteps, ["qr", "face"]);
+  assert.deepEqual(completed.payload.verifiedSteps, ["qr", "blink", "face"]);
   const duplicateCompletion = await post(`/api/attendance/attempts/${attempt.payload.attemptId}/complete`, {}, student.payload.token);
   assert.equal(duplicateCompletion.response.status, 409);
   const database = new DatabaseSync(path.join(dataDir, "attendance.sqlite"));
@@ -133,7 +151,7 @@ test("server-issued QR tokens gate face verification and attendance", async (t) 
   await new Promise((resolve) => child.once("exit", resolve));
   child = spawn(process.execPath, ["src/server.js"], {
     cwd: backendDir,
-    env: { ...process.env, HOST: "127.0.0.1", PORT: String(port), DATA_DIR: dataDir, QR_TTL_SECONDS: "10", CORS_ORIGINS: "http://trusted.test", FACE_SERVICE_URL: `http://127.0.0.1:${faceServer.address().port}` },
+    env: { ...process.env, HOST: "127.0.0.1", PORT: String(port), DATA_DIR: dataDir, QR_TTL_SECONDS: "10", CORS_ORIGINS: "http://trusted.test", FACE_SERVICE_URL: `http://127.0.0.1:${faceServer.address().port}`, FACE_SERVICE_TOKEN: faceToken },
     stdio: "ignore",
   });
   ready = false;

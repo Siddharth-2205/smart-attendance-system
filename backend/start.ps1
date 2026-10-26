@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 $env:HOST = "0.0.0.0"
 $env:PORT = "4000"
 $env:FACE_SERVICE_URL = "http://127.0.0.1:5001"
-$env:QR_TTL_SECONDS = "30"
+$env:QR_TTL_SECONDS = "5"
 $env:ALLOW_SELF_SERVICE_PROFESSOR_REGISTRATION = "true"
 # Seeded local accounts; the range below is the requested laptop registration
 # allowlist. For a real deployment, clear STUDENT_ROSTER_RANGE and use only the

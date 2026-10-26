@@ -7,4 +7,4 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY service.py .
 EXPOSE 5001
-CMD ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "5001"]
+CMD ["sh", "-c", "exec uvicorn service:app --host 0.0.0.0 --port ${PORT:-5001}"]

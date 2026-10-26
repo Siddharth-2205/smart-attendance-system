@@ -1,11 +1,14 @@
 import { createServer } from "node:http";
-import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import path from "node:path";
 import { completeAttendanceTransaction, loadState, saveState, sql } from "./database.js";
 
 const port = Number(process.env.PORT || 4000);
 const production = process.env.NODE_ENV === "production";
-const faceServiceUrl = process.env.FACE_SERVICE_URL || "http://127.0.0.1:5001";
-const qrTtlSeconds = Math.max(10, Math.min(120, Number(process.env.QR_TTL_SECONDS) || 30));
+const faceServiceHostport = process.env.FACE_SERVICE_HOSTPORT;
+const faceServiceUrl = process.env.FACE_SERVICE_URL || (faceServiceHostport ? `http://${faceServiceHostport}` : "http://127.0.0.1:5001");
+const faceServiceToken = process.env.FACE_SERVICE_TOKEN || "";
+const defaultQrTtlSeconds = Math.max(5, Math.min(120, Number(process.env.QR_TTL_SECONDS) || 5));
 const allowedOrigins = new Set((process.env.CORS_ORIGINS || "http://localhost:5173,http://127.0.0.1:5173,https://localhost:5174,https://127.0.0.1:5174")
   .split(",").map((origin) => origin.trim()).filter(Boolean));
 const bleServiceUuid = "6f3a0001-5f3d-4b7a-9c2a-2d8f1e0a0001";
@@ -30,6 +33,31 @@ function verifyPassword(value, stored) {
 }
 const hashToken = (token) => createHash("sha256").update(token).digest("hex");
 const sessionTtlSeconds = Math.max(600, Math.min(86_400, Number(process.env.SESSION_TTL_SECONDS) || 28_800));
+const loginFailureWindows = new Map();
+const loginFailureLimit = 10;
+const loginFailureWindowMs = 15 * 60 * 1000;
+const dummyPasswordHash = hashPassword(randomBytes(32).toString("hex"));
+function loginFailureKey(loginId) {
+  return createHash("sha256").update(String(loginId || "").trim().toUpperCase()).digest("hex");
+}
+function checkLoginRateLimit(key) {
+  const time = Date.now();
+  const window = loginFailureWindows.get(key);
+  if (window && window.resetAt > time && window.failures >= loginFailureLimit) {
+    throw fail(429, "LOGIN_RATE_LIMITED", "Too many unsuccessful sign-in attempts. Try again later.");
+  }
+}
+function recordLoginFailure(key) {
+  const time = Date.now();
+  if (loginFailureWindows.size >= 10_000) {
+    for (const [storedKey, window] of loginFailureWindows) if (window.resetAt <= time) loginFailureWindows.delete(storedKey);
+    if (loginFailureWindows.size >= 10_000) loginFailureWindows.clear();
+  }
+  let window = loginFailureWindows.get(key);
+  if (!window || window.resetAt <= time) window = { failures: 0, resetAt: time + loginFailureWindowMs };
+  window.failures += 1;
+  loginFailureWindows.set(key, window);
+}
 function issueSession(user) {
   const token = randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + sessionTtlSeconds * 1000).toISOString();
@@ -52,10 +80,16 @@ if (rosterRangeText && (!rosterRangeMatch || Number(rosterRangeMatch[1]) < 1 || 
 const rosterRange = rosterRangeMatch ? { min: Number(rosterRangeMatch[1]), max: Number(rosterRangeMatch[2]) } : null;
 const rosterConfigured = studentRoster.size > 0 || rosterRange !== null;
 if (production) {
+  if (!process.env.DATA_DIR || !path.isAbsolute(process.env.DATA_DIR)) throw new Error("Production DATA_DIR must point to an absolute persistent-storage path.");
+  if (!process.env.FACE_SERVICE_URL && !faceServiceHostport) throw new Error("Configure FACE_SERVICE_URL or FACE_SERVICE_HOSTPORT for the private face service.");
+  if (faceServiceToken.length < 32) throw new Error("Configure a private FACE_SERVICE_TOKEN with at least 32 characters in both services.");
   if (rosterRange) throw new Error("STUDENT_ROSTER_RANGE is development-only. Configure an exact institutional STUDENT_ROSTER in production.");
   if (!studentRoster.size) throw new Error("Configure an exact institutional STUDENT_ROSTER before starting in production.");
   if (process.env.ALLOW_DEMO_ACCOUNTS === "true") throw new Error("Demo accounts cannot be enabled in production.");
-  if ([...allowedOrigins].some((origin) => !origin.startsWith("https://"))) throw new Error("Production CORS_ORIGINS must contain HTTPS origins only.");
+  if (allowedOrigins.size !== 1 || [...allowedOrigins].some((origin) => {
+    try { const parsed = new URL(origin); return parsed.protocol !== "https:" || parsed.origin !== origin; }
+    catch { return true; }
+  })) throw new Error("Production CORS_ORIGINS must contain exactly one HTTPS origin without a path.");
 }
 const isOnStudentRoster = (loginId) => studentRoster.has(loginId) || (
   rosterRange && studentIdPattern.test(loginId)
@@ -76,7 +110,6 @@ let db;
 function save() { saveState(db); }
 async function load() {
   db = loadState();
-  if (production && !db.users.length && !db.usersExtra.length) throw new Error("Production database is not initialized. Run the approved provisioning tool before starting the API.");
   // Bearer credentials are stored only as SHA-256 digests; legacy raw tokens expire on upgrade.
   for (const user of [...db.users, ...db.usersExtra]) {
     user.tokens = (user.tokens || []).filter((entry) => typeof entry === "object" && typeof entry.digest === "string" && entry.digest.startsWith("sha256$") && Date.parse(entry.expiresAt) > Date.now());
@@ -112,7 +145,19 @@ const allUsers = () => [...db.users, ...db.usersExtra];
 const safeUser = (u) => ({ loginId: u.loginId, studentId: u.studentId, name: u.name, role: u.role });
 const send = (res, status, value, extraHeaders = {}) => {
   const origin = res.requestOrigin;
-  const headers = { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Headers": "Content-Type, Authorization", "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS", "Vary": "Origin", ...extraHeaders };
+  const headers = {
+    "Content-Type": "application/json; charset=utf-8",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Vary": "Origin",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(self)",
+    ...(production ? { "Strict-Transport-Security": "max-age=31536000" } : {}),
+    ...extraHeaders,
+  };
   if (origin && allowedOrigins.has(origin)) headers["Access-Control-Allow-Origin"] = origin;
   res.writeHead(status, headers);
   res.end(JSON.stringify(value));
@@ -133,12 +178,13 @@ function tokenUser(req) {
 function assertRole(user, role) { if (user.role !== role) throw fail(403, "FORBIDDEN", "You do not have permission to do that."); }
 const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 function courseInput(data, user, existingId = null) {
+  const existing = existingId ? db.courses.find((course) => course.id === existingId) : null;
   const name = String(data.name || "").trim();
   const code = String(data.code || "").trim().toUpperCase();
   const startTime = String(data.startTime || "");
   const endTime = String(data.endTime || "");
+  const qrTtlSeconds = Number(data.qrTtlSeconds ?? existing?.qrTtlSeconds ?? defaultQrTtlSeconds);
   const days = [...new Set(Array.isArray(data.days) ? data.days : [])].filter((day) => weekdays.includes(day));
-  const existing = existingId ? db.courses.find((course) => course.id === existingId) : null;
   const rawStudentIds = Array.isArray(data.studentIds) ? data.studentIds : (existing?.studentIds || []);
   const studentIds = [...new Set(rawStudentIds.map((id) => String(id).trim().toUpperCase()).filter(Boolean))];
   const timeValid = (value) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
@@ -146,10 +192,11 @@ function courseInput(data, user, existingId = null) {
     throw fail(400, "INVALID_COURSE", "Enter a course name, code, at least one day, and a valid start and end time.");
   }
   if (!studentIds.length || studentIds.length > 500 || studentIds.some((id) => !studentIdPattern.test(id))) throw fail(400, "INVALID_ENROLLMENT", "Enter student roll numbers in YYBCSNNN, YYBDANNN, or YYBECNNN format.");
+  if (!Number.isInteger(qrTtlSeconds) || qrTtlSeconds < 5 || qrTtlSeconds > 120) throw fail(400, "INVALID_QR_INTERVAL", "Choose a QR rotation interval between 5 and 120 seconds.");
   if (studentIds.some((id) => !db.users.some((student) => student.role === "student" && student.studentId === id))) throw fail(400, "INVALID_ENROLLMENT", "Every enrolled student must have a provisioned student account.");
   const collision = db.courses.some((course) => course.professorId === user.loginId && course.id !== existingId && course.days.some((day) => days.includes(day)) && startTime < course.endTime && endTime > course.startTime);
   if (collision) throw fail(409, "SCHEDULE_CONFLICT", "This time overlaps another class on the selected day.");
-  return { name, code, days, startTime, endTime, beaconId: String(data.beaconId || `Room ${code}`).trim().slice(0, 60), students: studentIds.length, studentIds };
+  return { name, code, days, startTime, endTime, qrTtlSeconds, beaconId: String(data.beaconId || `Room ${code}`).trim().slice(0, 60), students: studentIds.length, studentIds };
 }
 function sessionByCode(code) { const s = db.sessions.find((item) => item.code === code); if (!s) throw fail(404, "SESSION_NOT_FOUND", "Attendance session not found."); return s; }
 function ownedSessionByCode(code, user) {
@@ -159,12 +206,20 @@ function ownedSessionByCode(code, user) {
   return session;
 }
 function attemptById(id, user) { const a = db.attempts.find((item) => item.attemptId === id && item.studentId === user.studentId); if (!a) throw fail(404, "ATTEMPT_NOT_FOUND", "Attendance attempt not found."); return a; }
+function attendanceRoster(session, course) {
+  const rosterIds = session.rosterStudentIds?.length ? session.rosterStudentIds : course.studentIds || [];
+  return rosterIds.map((studentId) => {
+    const student = db.users.find((user) => user.studentId === studentId);
+    const record = db.attendance.find((item) => item.studentId === studentId && item.sessionId === session.code);
+    return { studentId, name: student?.name || studentId, present: Boolean(record), markedAt: record?.markedAt || null };
+  });
+}
 async function callFaceService(pathname, payload) {
   let response;
   try {
     response = await fetch(`${faceServiceUrl}${pathname}`, {
       method: payload === undefined ? "GET" : "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(faceServiceToken ? { Authorization: `Bearer ${faceServiceToken}` } : {}) },
       ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
       signal: AbortSignal.timeout(60_000),
     });
@@ -177,11 +232,13 @@ async function callFaceService(pathname, payload) {
 }
 function activeQr(session) {
   const time = Date.now();
+  const course = db.courses.find((item) => item.id === session.courseId);
+  const ttlSeconds = course?.qrTtlSeconds ?? defaultQrTtlSeconds;
   if (!session.qr || Date.parse(session.qr.expiresAt) <= time) {
     const issuedAt = new Date(time).toISOString();
-    session.qr = { token: randomBytes(24).toString("hex"), issuedAt, expiresAt: new Date(time + qrTtlSeconds * 1000).toISOString() };
+    session.qr = { token: randomBytes(24).toString("hex"), issuedAt, expiresAt: new Date(time + ttlSeconds * 1000).toISOString() };
   }
-  return { ...session.qr, sessionId: session.code, ttlSeconds: qrTtlSeconds };
+  return { ...session.qr, sessionId: session.code, ttlSeconds };
 }
 
 const server = createServer(async (req, res) => {
@@ -190,7 +247,7 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     const method = req.method;
-    if (method === "GET" && url.pathname === "/api/health") return send(res, 200, { status: "ok", rosterConfigured });
+    if (method === "GET" && url.pathname === "/api/health") return send(res, 200, { status: "ok", rosterConfigured, accountsProvisioned: allUsers().length > 0 });
     if (method === "GET" && url.pathname === "/api/auth/status") return send(res, 200, {
       passwordLoginEnabled: true,
       studentRegistrationEnabled: !production && rosterConfigured,
@@ -198,10 +255,17 @@ const server = createServer(async (req, res) => {
     });
     if (method === "POST" && url.pathname === "/api/auth/login") {
       const { loginId, password } = await body(req);
+      const rateKey = loginFailureKey(loginId);
+      checkLoginRateLimit(rateKey);
       const user = allUsers().find((u) => u.loginId.toUpperCase() === String(loginId || "").trim().toUpperCase());
-      const storedHash = user?.passwordHash;
-      const passwordMatches = verifyPassword(String(password || ""), storedHash);
-      if (!user || !passwordMatches) throw fail(401, "INVALID_CREDENTIALS", "Invalid ID or password.");
+      const validInput = typeof password === "string" && password.length >= 1 && password.length <= 128;
+      const storedHash = user?.passwordHash || dummyPasswordHash;
+      const passwordMatches = verifyPassword(validInput ? password : "invalid-password-input", storedHash);
+      if (!user || !validInput || !passwordMatches) {
+        recordLoginFailure(rateKey);
+        throw fail(401, "INVALID_CREDENTIALS", "Invalid ID or password.");
+      }
+      loginFailureWindows.delete(rateKey);
       if (!storedHash.startsWith("scrypt$")) user.passwordHash = hashPassword(String(password || ""));
       const session = issueSession(user); await save();
       return send(res, 200, { ...session, user: safeUser(user) });
@@ -244,6 +308,40 @@ const server = createServer(async (req, res) => {
     if (method === "GET" && url.pathname === "/api/teacher/courses") {
       assertRole(user, "professor");
       return send(res, 200, { courses: db.courses.filter((c) => c.professorId === user.loginId).map((c) => ({ ...c, activeSessionCode: db.sessions.find((s) => s.courseId === c.id && s.status === "open")?.code || null })) });
+    }
+    if (method === "GET" && url.pathname === "/api/teacher/students/range") {
+      assertRole(user, "professor");
+      const from = String(url.searchParams.get("from") || "").trim().toUpperCase();
+      const to = String(url.searchParams.get("to") || "").trim().toUpperCase();
+      const fromMatch = from.match(/^(\d{2}(?:BCS|BDA|BEC))(\d{3})$/);
+      const toMatch = to.match(/^(\d{2}(?:BCS|BDA|BEC))(\d{3})$/);
+      if (!fromMatch || !toMatch || fromMatch[1] !== toMatch[1] || Number(fromMatch[2]) > Number(toMatch[2])) {
+        throw fail(400, "INVALID_STUDENT_RANGE", "Enter a valid inclusive roll-number range within the same admission year and department.");
+      }
+      const minRoll = Number(fromMatch[2]);
+      const maxRoll = Number(toMatch[2]);
+      const studentIds = db.users
+        .filter((student) => student.role === "student" && student.studentId?.startsWith(fromMatch[1]))
+        .map((student) => student.studentId)
+        .filter((studentId) => Number(studentId.slice(-3)) >= minRoll && Number(studentId.slice(-3)) <= maxRoll)
+        .sort((a, b) => Number(a.slice(-3)) - Number(b.slice(-3)));
+      return send(res, 200, { from, to, studentIds });
+    }
+    if (method === "GET" && url.pathname === "/api/teacher/attendance-sessions") {
+      assertRole(user, "professor");
+      const sessions = db.sessions
+        .filter((session) => db.courses.some((course) => course.id === session.courseId && course.professorId === user.loginId))
+        .map((session) => {
+          const course = db.courses.find((item) => item.id === session.courseId);
+          const roster = attendanceRoster(session, course);
+          return {
+            sessionId: session.code, courseId: course.id, courseName: course.name, courseCode: course.code,
+            status: session.status, createdAt: session.createdAt, closedAt: session.closedAt || null,
+            totalCount: roster.length, presentCount: roster.filter((student) => student.present).length,
+          };
+        })
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+      return send(res, 200, { sessions });
     }
     if (method === "POST" && url.pathname === "/api/teacher/courses") {
       assertRole(user, "professor"); const data = await body(req); const course = { id: randomUUID(), professorId: user.loginId, ...courseInput(data, user), createdAt: now() };
@@ -293,14 +391,14 @@ const server = createServer(async (req, res) => {
       assertRole(user, "professor"); const data = await body(req); const course = db.courses.find((c) => c.id === data.courseId && c.professorId === user.loginId);
       if (!course) throw fail(404, "COURSE_NOT_FOUND", "Course not found.");
       if (db.sessions.some((s) => s.courseId === course.id && s.status === "open")) throw fail(409, "SESSION_ALREADY_OPEN", "This course already has an open session.");
-      const session = { code: randomBytes(5).toString("hex").toUpperCase(), courseId: course.id, beaconId: data.beaconId || course.beaconId, status: "open", createdAt: now(), qr: null };
+      const session = { code: randomBytes(5).toString("hex").toUpperCase(), courseId: course.id, beaconId: data.beaconId || course.beaconId, status: "open", createdAt: now(), qr: null, rosterStudentIds: [...(course.studentIds || [])] };
       db.sessions.push(session); await save(); return send(res, 201, { code: session.code });
     }
     let match = url.pathname.match(/^\/api\/sessions\/([^/]+)\/(qr|attendance|close)$/);
     if (match) {
       assertRole(user, "professor"); const session = ownedSessionByCode(decodeURIComponent(match[1]), user);
       if (match[2] === "qr" && method === "GET") { if (session.status !== "open") throw fail(409, "SESSION_CLOSED", "This attendance session is closed."); const qr = activeQr(session); await save(); return send(res, 200, qr); }
-      if (match[2] === "attendance" && method === "GET") { const course = db.courses.find((c) => c.id === session.courseId); return send(res, 200, { roster: db.users.filter((u) => (course.studentIds || []).includes(u.studentId)).map((u) => ({ studentId: u.studentId, name: u.name, present: db.attendance.some((a) => a.studentId === u.studentId && a.courseId === course.id && a.sessionId === session.code), markedAt: db.attendance.find((a) => a.studentId === u.studentId && a.courseId === course.id && a.sessionId === session.code)?.markedAt || null })) }); }
+      if (match[2] === "attendance" && method === "GET") { const course = db.courses.find((c) => c.id === session.courseId); return send(res, 200, { session: { sessionId: session.code, status: session.status, createdAt: session.createdAt, closedAt: session.closedAt || null }, course: { courseId: course.id, name: course.name, code: course.code }, roster: attendanceRoster(session, course) }); }
       if (match[2] === "close" && method === "POST") { session.status = "closed"; session.closedAt = now(); await save(); return send(res, 200, { status: "closed" }); }
     }
     if (method === "POST" && url.pathname === "/api/attendance/attempts") {
@@ -334,15 +432,27 @@ const server = createServer(async (req, res) => {
         if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw fail(400, "BLE_CHECK_FAILED", "The classroom beacon response is invalid.");
         delete attempt.bleChallenge; attempt.factors.ble = true; await save(); return send(res, 200, { verified: true });
       }
+      if (route === "face/challenge" && method === "POST") {
+        if (sessionByCode(attempt.sessionId).status !== "open") throw fail(409, "SESSION_CLOSED", "This attendance session is closed.");
+        if (!attempt.factors.qr) throw fail(409, "QR_REQUIRED", "Scan the professor's current QR code before face verification.");
+        if (attempt.completedAt) throw fail(409, "ATTEMPT_COMPLETED", "Attendance has already been recorded for this attempt.");
+        if (attempt.factors.face) return send(res, 200, { verified: true, alreadyVerified: true });
+        const challenge = { challengeId: randomBytes(16).toString("hex"), promptFrame: randomInt(4, 7), expiresAt: Date.now() + 90_000 };
+        attempt.challenge = challenge; await save();
+        return send(res, 200, { challengeId: challenge.challengeId, promptFrame: challenge.promptFrame, expiresAt: new Date(challenge.expiresAt).toISOString() });
+      }
       if (route === "face" && method === "POST") {
         const data = await body(req);
         if (sessionByCode(attempt.sessionId).status !== "open") throw fail(409, "SESSION_CLOSED", "This attendance session is closed.");
         if (!attempt.factors.qr) throw fail(409, "QR_REQUIRED", "Scan the professor's current QR code before face verification.");
         if (attempt.completedAt) throw fail(409, "ATTEMPT_COMPLETED", "Attendance has already been recorded for this attempt.");
-        if (typeof data.image !== "string" || !data.image.startsWith("data:image/")) throw fail(400, "IMAGE_REQUIRED", "Capture a clear image of your face and try again.");
-        const result = await callFaceService("/verify", { studentId: user.studentId, image: data.image });
+        const challenge = attempt.challenge;
+        if (!challenge || challenge.expiresAt <= Date.now() || data.challengeId !== challenge.challengeId) throw fail(400, "BLINK_CHALLENGE_INVALID", "The blink check expired. Restart attendance and try again.");
+        if (!Array.isArray(data.frames) || data.frames.length < 10 || data.frames.length > 16 || data.frames.some((frame) => typeof frame !== "string" || !frame.startsWith("data:image/jpeg;base64,") || frame.length > 400_000)) throw fail(400, "INVALID_FACE_FRAMES", "The camera capture was incomplete. Please try face verification again.");
+        const result = await callFaceService("/verify", { studentId: user.studentId, frames: data.frames, promptFrame: challenge.promptFrame });
+        if (result.blinkVerified !== true) throw fail(403, "BLINK_NOT_DETECTED", "Blink once when prompted, then try again.");
         if (result.verified !== true) throw fail(403, "FACE_MISMATCH", "The face does not match the enrolled account.");
-        attempt.factors.face = true; await save(); return send(res, 200, { verified: true });
+        attempt.factors.face = true; attempt.factors.blink = true; delete attempt.challenge; await save(); return send(res, 200, { verified: true, blinkVerified: true });
       }
       if (route === "qr" && method === "POST") {
         const data = await body(req);
@@ -368,7 +478,7 @@ const server = createServer(async (req, res) => {
         if (!course) throw fail(403, "NOT_ENROLLED", "You are not enrolled in this class.");
         if (session.status !== "open") throw fail(409, "SESSION_CLOSED", "This attendance session is closed.");
         if (db.attendance.some((item) => item.studentId === user.studentId && item.sessionId === session.code)) throw fail(409, "ALREADY_MARKED", "Attendance is already recorded for this session.");
-        const record = { studentId: user.studentId, studentName: user.name, courseId: course.id, courseName: course.name, sessionId: session.code, status: "present", verifiedSteps: ["qr", "face"], markedAt: now(), date: new Date().toISOString().slice(0, 10) };
+        const record = { studentId: user.studentId, studentName: user.name, courseId: course.id, courseName: course.name, sessionId: session.code, status: "present", verifiedSteps: ["qr", "blink", "face"], markedAt: now(), date: new Date().toISOString().slice(0, 10) };
         if (!completeAttendanceTransaction(record, attempt)) throw fail(409, "ALREADY_MARKED", "Attendance is already recorded for this session.");
         db.attendance.push(record);
         attempt.completedAt = record.markedAt;
@@ -386,7 +496,7 @@ await load();
 if (production && [...db.users, ...db.usersExtra].some((user) => user.demoAccount)) {
   throw new Error("Demo accounts are present in the production database. Remove them and provision institutional accounts before starting.");
 }
-if (production && [...db.users, ...db.usersExtra].some((user) => !/^(?:scrypt\$[a-f0-9]{32}\$[a-f0-9]{64}|[a-f0-9]{64})$/i.test(user.passwordHash || ""))) {
+if (production && [...db.users, ...db.usersExtra].some((user) => !/^scrypt\$[a-f0-9]{32}\$[a-f0-9]{64}$/i.test(user.passwordHash || ""))) {
   throw new Error("Every production account must have a valid password hash. Provision password-authenticated accounts before starting.");
 }
 const host = process.env.HOST || "0.0.0.0";

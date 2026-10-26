@@ -32,6 +32,8 @@ test("production provisions password accounts and authenticates both roles witho
     STUDENT_ROSTER: "25BCS001",
     PROFESSOR_ROSTER: "faculty01",
     CORS_ORIGINS: "https://attendance.test",
+    FACE_SERVICE_URL: "http://127.0.0.1:5001",
+    FACE_SERVICE_TOKEN: "test-only-face-service-token-32-bytes",
   };
   let server;
   t.after(async () => {
@@ -69,6 +71,10 @@ test("production provisions password accounts and authenticates both roles witho
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert.ok(ready, "the production API should become healthy");
+  const health = await fetch(`${base}/api/health`);
+  assert.equal(health.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(health.headers.get("x-frame-options"), "DENY");
+  assert.equal(health.headers.get("strict-transport-security"), "max-age=31536000");
 
   const authStatus = await fetch(`${base}/api/auth/status`).then((response) => response.json());
   assert.equal(authStatus.passwordLoginEnabled, true);
@@ -101,6 +107,19 @@ test("production provisions password accounts and authenticates both roles witho
     body: JSON.stringify({ loginId: "25BCS001", password: "WrongTestPassword!23" }),
   });
   assert.equal(rejectedLogin.status, 401);
+  let rateLimited;
+  for (let index = 0; index < 10; index += 1) {
+    rateLimited = await fetch(`${base}/api/auth/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loginId: "unknown-account", password: "WrongTestPassword!23" }),
+    });
+    assert.equal(rateLimited.status, 401);
+  }
+  rateLimited = await fetch(`${base}/api/auth/login`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ loginId: "unknown-account", password: "WrongTestPassword!23" }),
+  });
+  assert.equal(rateLimited.status, 429, "production should throttle repeated failed logins for the same account");
 
   const rejectedPath = path.join(dataDir, "rejected-users.json");
   await writeFile(rejectedPath, JSON.stringify({

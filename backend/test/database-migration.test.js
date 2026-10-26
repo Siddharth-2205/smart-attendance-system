@@ -75,7 +75,7 @@ test("versioned migration imports the previous SQLite state and store.json fallb
   const dashboard = await fetch(`${base}/api/student/dashboard`, { headers: { Authorization: `Bearer ${session.token}` } });
   assert.equal(dashboard.status, 200);
   const migratedDb = new DatabaseSync(path.join(dataDir, "attendance.sqlite"), { readOnly: true });
-  assert.equal(migratedDb.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 1);
+  assert.equal(migratedDb.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 3);
   assert.equal(migratedDb.prepare("SELECT COUNT(*) AS count FROM users WHERE role='student'").get().count, 1);
   assert.equal(migratedDb.prepare("SELECT COUNT(*) AS count FROM attendance_records WHERE student_id='25BCS001'").get().count, 1);
   assert.equal(migratedDb.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name='app_state'").get().count, 0);

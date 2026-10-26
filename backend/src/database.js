@@ -142,6 +142,22 @@ const migrations = [
       sql.prepare("INSERT INTO schema_migrations(version) VALUES(?)").run(1);
     },
   },
+  {
+    version: 2,
+    apply() {
+      const hasQrTtlColumn = sql.prepare("PRAGMA table_info(courses)").all().some((column) => column.name === "qr_ttl_seconds");
+      if (!hasQrTtlColumn) sql.exec("ALTER TABLE courses ADD COLUMN qr_ttl_seconds INTEGER NOT NULL DEFAULT 5 CHECK(qr_ttl_seconds BETWEEN 5 AND 120)");
+      sql.prepare("INSERT INTO schema_migrations(version) VALUES(?)").run(2);
+    },
+  },
+  {
+    version: 3,
+    apply() {
+      const hasRosterColumn = sql.prepare("PRAGMA table_info(attendance_sessions)").all().some((column) => column.name === "roster_json");
+      if (!hasRosterColumn) sql.exec("ALTER TABLE attendance_sessions ADD COLUMN roster_json TEXT NOT NULL DEFAULT '[]'");
+      sql.prepare("INSERT INTO schema_migrations(version) VALUES(?)").run(3);
+    },
+  },
 ];
 
 sql.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
@@ -160,12 +176,12 @@ export function loadState() {
   }));
   const courses = sql.prepare("SELECT * FROM courses ORDER BY id").all().map((c) => ({
     id: c.id, name: c.name, code: c.code, professorId: c.professor_id, startTime: c.start_time, endTime: c.end_time,
-    days: parse(c.days_json, []), beaconId: c.beacon_id, students: c.students, createdAt: c.created_at,
+    days: parse(c.days_json, []), beaconId: c.beacon_id, students: c.students, qrTtlSeconds: c.qr_ttl_seconds, createdAt: c.created_at,
     studentIds: sql.prepare("SELECT student_id FROM course_enrollments WHERE course_id=? ORDER BY student_id").all(c.id).map((r) => r.student_id),
   }));
   const sessions = sql.prepare("SELECT * FROM attendance_sessions ORDER BY created_at").all().map((s) => ({
     code: s.code, courseId: s.course_id, beaconId: s.beacon_id, status: s.status, createdAt: s.created_at,
-    ...(s.closed_at ? { closedAt: s.closed_at } : {}), qr: parse(s.qr_json, null),
+    ...(s.closed_at ? { closedAt: s.closed_at } : {}), qr: parse(s.qr_json, null), rosterStudentIds: parse(s.roster_json, []),
   }));
   const attempts = sql.prepare("SELECT * FROM attendance_attempts ORDER BY created_at").all().map((a) => ({
     attemptId: a.attempt_id, studentId: a.student_id, courseId: a.course_id, sessionId: a.session_id,
@@ -187,18 +203,18 @@ export function saveState(state) {
   try {
     const putUser = sql.prepare("INSERT INTO users(login_id,student_id,email,name,role,password_hash,tokens_json,demo_account) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(login_id) DO UPDATE SET student_id=excluded.student_id,email=excluded.email,name=excluded.name,role=excluded.role,password_hash=excluded.password_hash,tokens_json=excluded.tokens_json,demo_account=excluded.demo_account");
     for (const u of [...state.users, ...state.usersExtra]) putUser.run(u.loginId, u.role === "student" ? u.studentId : null, u.email || null, u.name, u.role, u.passwordHash, JSON.stringify(u.tokens || []), u.demoAccount ? 1 : 0);
-    const putCourse = sql.prepare("INSERT INTO courses(id,name,code,professor_id,start_time,end_time,days_json,beacon_id,students,created_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,code=excluded.code,professor_id=excluded.professor_id,start_time=excluded.start_time,end_time=excluded.end_time,days_json=excluded.days_json,beacon_id=excluded.beacon_id,students=excluded.students,created_at=excluded.created_at");
+    const putCourse = sql.prepare("INSERT INTO courses(id,name,code,professor_id,start_time,end_time,days_json,beacon_id,students,created_at,qr_ttl_seconds) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,code=excluded.code,professor_id=excluded.professor_id,start_time=excluded.start_time,end_time=excluded.end_time,days_json=excluded.days_json,beacon_id=excluded.beacon_id,students=excluded.students,created_at=excluded.created_at,qr_ttl_seconds=excluded.qr_ttl_seconds");
     const putEnrollment = sql.prepare("INSERT OR IGNORE INTO course_enrollments(course_id,student_id) VALUES(?,?)");
     for (const c of state.courses) {
-      putCourse.run(c.id, c.name, c.code, c.professorId, c.startTime, c.endTime, JSON.stringify(c.days || []), c.beaconId || "", c.students || 0, c.createdAt || new Date().toISOString());
+      putCourse.run(c.id, c.name, c.code, c.professorId, c.startTime, c.endTime, JSON.stringify(c.days || []), c.beaconId || "", c.students || 0, c.createdAt || new Date().toISOString(), c.qrTtlSeconds || 5);
       const ids = new Set(c.studentIds || []);
       for (const row of sql.prepare("SELECT student_id FROM course_enrollments WHERE course_id=?").all(c.id)) if (!ids.has(row.student_id)) sql.prepare("DELETE FROM course_enrollments WHERE course_id=? AND student_id=?").run(c.id, row.student_id);
       for (const id of ids) putEnrollment.run(c.id, id);
     }
     const courseIds = new Set(state.courses.map((c) => c.id));
     for (const row of sql.prepare("SELECT id FROM courses").all()) if (!courseIds.has(row.id)) sql.prepare("DELETE FROM courses WHERE id=?").run(row.id);
-    const putSession = sql.prepare("INSERT INTO attendance_sessions(code,course_id,beacon_id,status,created_at,closed_at,qr_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(code) DO UPDATE SET course_id=excluded.course_id,beacon_id=excluded.beacon_id,status=excluded.status,created_at=excluded.created_at,closed_at=excluded.closed_at,qr_json=excluded.qr_json");
-    for (const s of state.sessions) putSession.run(s.code, s.courseId, s.beaconId || "", s.status, s.createdAt, s.closedAt || null, s.qr ? JSON.stringify(s.qr) : null);
+    const putSession = sql.prepare("INSERT INTO attendance_sessions(code,course_id,beacon_id,status,created_at,closed_at,qr_json,roster_json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(code) DO UPDATE SET course_id=excluded.course_id,beacon_id=excluded.beacon_id,status=excluded.status,created_at=excluded.created_at,closed_at=excluded.closed_at,qr_json=excluded.qr_json,roster_json=excluded.roster_json");
+    for (const s of state.sessions) putSession.run(s.code, s.courseId, s.beaconId || "", s.status, s.createdAt, s.closedAt || null, s.qr ? JSON.stringify(s.qr) : null, JSON.stringify(s.rosterStudentIds || []));
     const putAttempt = sql.prepare("INSERT INTO attendance_attempts(attempt_id,student_id,course_id,session_id,required_factors_json,factors_json,created_at,challenge_json,ble_challenge_json,qr_verified_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(attempt_id) DO UPDATE SET student_id=excluded.student_id,course_id=excluded.course_id,session_id=excluded.session_id,required_factors_json=excluded.required_factors_json,factors_json=excluded.factors_json,created_at=excluded.created_at,challenge_json=excluded.challenge_json,ble_challenge_json=excluded.ble_challenge_json,qr_verified_at=excluded.qr_verified_at,completed_at=excluded.completed_at");
     for (const a of state.attempts) putAttempt.run(a.attemptId, a.studentId, a.courseId, a.sessionId, JSON.stringify(a.requiredFactors || []), JSON.stringify(a.factors || {}), a.createdAt, a.challenge ? JSON.stringify(a.challenge) : null, a.bleChallenge ? JSON.stringify(a.bleChallenge) : null, a.qrVerifiedAt || null, a.completedAt || null);
     sql.exec("COMMIT");

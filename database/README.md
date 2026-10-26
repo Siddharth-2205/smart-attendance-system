@@ -9,8 +9,8 @@ The backend applies ordered, transactional schema migrations from `backend/src/d
 The current schema includes:
 
 - `users`: student and professor accounts, salted password hashes, and hashed-token metadata.
-- `courses` and `course_enrollments`: class schedule and normalized student enrollment.
-- `attendance_sessions`: active/closed class sessions and the server-controlled rotating QR token.
+- `courses` and `course_enrollments`: class schedule, per-class QR validity interval (5–120 seconds), and normalized student enrollment. Migration version 2 adds the QR interval with a 5-second default for existing classes.
+- `attendance_sessions`: active/closed class sessions, the server-controlled rotating QR token, and the class roster snapshot used for session reports.
 - `attendance_attempts`: student-bound QR/face verification progress and completion state.
 - `attendance_records`: confirmed attendance with unique `(student_id, session_id)` and foreign-key relationships.
 
