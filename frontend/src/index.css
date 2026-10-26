@@ -49,11 +49,13 @@
 html {
   min-height: 100%;
   background: var(--bg-primary);
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   min-width: 320px;
   min-height: 100vh;
+  min-height: 100svh;
   background:
     radial-gradient(
       circle at 15% 20%,
@@ -75,10 +77,45 @@ input {
 
 button {
   border: none;
+  touch-action: manipulation;
 }
 
 #root {
   min-height: 100vh;
+  min-height: 100svh;
+}
+
+@supports (min-height: 100dvh) {
+  body,
+  #root {
+    min-height: 100dvh;
+  }
+}
+
+@media (max-width: 600px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .login-page,
+  .dashboard-page,
+  .face-page,
+  .qr-verification-page,
+  .success-page,
+  .professor-login-page {
+    padding-top: max(14px, env(safe-area-inset-top));
+    padding-left: max(14px, env(safe-area-inset-left));
+    padding-right: max(14px, env(safe-area-inset-right));
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+}
+
+@media (pointer: coarse) {
+  button {
+    min-height: 44px;
+  }
 }
 
 
