@@ -1,0 +1,11 @@
+services:
+  face-service:
+    build: .
+    environment:
+      FACE_TEMPLATE_KEY: ${FACE_TEMPLATE_KEY:?Set a 64-character hexadecimal FACE_TEMPLATE_KEY}
+      FACE_DATA_DIR: /service-data
+    ports:
+      - "127.0.0.1:5001:5001"
+    volumes:
+      - ./data:/service-data
+    restart: unless-stopped
