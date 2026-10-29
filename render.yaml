@@ -15,8 +15,8 @@ services:
         value: development
       - key: HOST
         value: 0.0.0.0
-      - key: STUDENT_ROSTER
-        value: "23BCS001,23BCS002,23BCS003,23BCS004,23BCS005"
+      - key: STUDENT_ROSTER_RANGE
+        value: "001-300"
       - key: CORS_ORIGINS
         value: https://smart-attendance-demo-qrmf.onrender.com
       - key: ALLOW_SELF_SERVICE_PROFESSOR_REGISTRATION
