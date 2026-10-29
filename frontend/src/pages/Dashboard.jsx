@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import "../styles/dashboard.css";
 
-function Dashboard({ studentId, onAttendance }) {
+function Dashboard({ studentId, onAttendance, onLogout }) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const [data, setData] = useState(null);
@@ -12,17 +12,25 @@ function Dashboard({ studentId, onAttendance }) {
   const [cameraReady, setCameraReady] = useState(false);
   const [consent, setConsent] = useState(false);
   const [enrolling, setEnrolling] = useState(false);
+  const [history, setHistory] = useState(null);
+  const [historyError, setHistoryError] = useState("");
 
   useEffect(() => {
     let active = true;
-    api("/api/student/dashboard")
+    const refreshDashboard = () => api("/api/student/dashboard")
       .then((result) => { if (active) setData(result); })
       .catch((err) => { if (active) setError(err.message); });
+    void refreshDashboard();
+    const dashboardRefresh = window.setInterval(refreshDashboard, 10_000);
     api("/api/student/face")
       .then((result) => { if (active) setFaceEnrolled(Boolean(result.enrolled)); })
       .catch((err) => { if (active) setError(err.message); });
+    api("/api/student/attendance-history")
+      .then((result) => { if (active) setHistory(result.history || []); })
+      .catch((err) => { if (active) setHistoryError(err.message); });
     return () => {
       active = false;
+      window.clearInterval(dashboardRefresh);
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
@@ -110,36 +118,65 @@ function Dashboard({ studentId, onAttendance }) {
         {data && <>
           <section className="attendance-summary">
             <div className="summary-card"><span>Overall Attendance</span><strong>{data.summary.overallAttendance}%</strong></div>
-            <div className="summary-card"><span>Classes Today</span><strong>{data.summary.classesToday}</strong></div>
-            <div className="summary-card"><span>Present Today</span><strong>{data.summary.presentToday} / {data.summary.classesToday}</strong></div>
+            <div className="summary-card"><span>Active Sessions</span><strong>{data.summary.activeSessions}</strong></div>
+            <div className="summary-card"><span>Present Today</span><strong>{data.summary.presentToday}</strong></div>
+          </section>
+
+          <section className="history-section" aria-labelledby="history-heading">
+            <div className="history-heading-row">
+              <div>
+                <h2 id="history-heading">Attendance History</h2>
+                <p className="schedule-caption">Your record for completed class sessions.</p>
+              </div>
+              {history && <span className="history-total">{history.filter((item) => item.status === "present" || item.status === "late").length} of {history.filter((item) => item.status !== "excused").length} counted sessions</span>}
+            </div>
+            {historyError && <p className="error-message" role="alert">{historyError}</p>}
+            {!history && !historyError && <p role="status">Loading attendance history…</p>}
+            {history?.length === 0 && <p className="history-empty">No completed class sessions yet. Your attendance will appear here after a session closes.</p>}
+            {history?.length > 0 && <div className="history-list">
+              {history.map((item) => (
+                <article className="history-row" key={item.sessionId}>
+                  <div className="history-course">
+                    <strong>{item.courseName}</strong>
+                    <span>{item.courseCode} · {new Date(`${item.date}T00:00:00`).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}</span>
+                  </div>
+                  <div className="history-result">
+                    <span className={`history-status ${item.status}`}>{item.status === "present" ? "Present" : item.status === "late" ? "Late" : item.status === "excused" ? "Excused" : "Absent"}</span>
+                    {item.note && <span className="history-note">{item.note}</span>}
+                  </div>
+                </article>
+              ))}
+            </div>}
           </section>
 
           <section className="classes-section">
-            <h2>Weekly Class Schedule</h2>
-            <p className="schedule-caption">Class times and professor details are set by each professor.</p>
+            <h2>Active Attendance Sessions</h2>
+            <p className="schedule-caption">Only sessions currently switched on by a professor appear here.</p>
             <div className="class-list">
               {data.classes.map((course) => (
                 <article className="class-card" key={course.courseId}>
                   <div>
                     <h3>{course.name}</h3>
-                    <p>{course.code} · {(course.days || []).join(", ")} · {course.timeLabel}</p>
+                    <p>{course.code} · Attendance is active</p>
                     <p>Professor: {course.professorName}</p>
-                    <p>Room: {course.beaconId}</p>
                     {course.marked && <p>Attendance already recorded.</p>}
                     {!course.activeSessionCode && <p>Attendance session is not open yet.</p>}
                   </div>
                   <button
-                    disabled={!course.canMarkAttendance || faceEnrolled !== true}
+                    disabled={course.marked || faceEnrolled !== true}
                     onClick={() => onAttendance(course)}
                   >
-                    {course.marked ? "Marked" : faceEnrolled !== true ? "Enroll face first" : course.canMarkAttendance ? "Mark Attendance" : "Not available"}
+                    {course.marked ? "Marked" : faceEnrolled !== true ? "Enroll face first" : "Mark Attendance"}
                   </button>
                 </article>
               ))}
-              {data.classes.length === 0 && <p>No classes are scheduled for today.</p>}
+              {data.classes.length === 0 && <p>No active attendance sessions right now. Classes will appear here when a professor switches attendance on.</p>}
             </div>
           </section>
         </>}
+        <footer className="student-dashboard-footer">
+          <button type="button" onClick={onLogout}>Logout</button>
+        </footer>
       </section>
     </main>
   );

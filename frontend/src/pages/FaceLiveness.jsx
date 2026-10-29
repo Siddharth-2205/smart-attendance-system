@@ -43,21 +43,35 @@ function FaceLiveness({ className, attemptId, onVerified }) {
         }
 
         stream = cameraStream;
-
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
+        const video = videoRef.current;
+        if (!video) {
+          cameraStream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        video.srcObject = cameraStream;
+        try {
+          await video.play();
+        } catch (playError) {
+          if (!mounted) return;
+          throw playError;
         }
 
-        setCameraStatus("ready");
+        if (mounted) setCameraStatus("ready");
       } catch (err) {
+        if (!mounted) return;
+        if (stream) {
+          const video = videoRef.current;
+          if (video?.srcObject === stream) video.srcObject = null;
+          stream.getTracks().forEach((track) => track.stop());
+          stream = null;
+        }
         console.error("Camera access error:", err);
 
         if (mounted) {
           setCameraStatus("error");
-          setError(
-            "Camera access is required for face verification. " +
-              "Please allow camera permissions and try again."
-          );
+          setError(err.name === "AbortError"
+            ? "The camera preview was interrupted. Please restart camera access and try again."
+            : "Camera access is required for face verification. Please allow camera permissions and try again.");
         }
       }
     };
@@ -69,6 +83,11 @@ function FaceLiveness({ className, attemptId, onVerified }) {
 
       // Stop camera tracks when leaving the page.
       if (stream) {
+        const video = videoRef.current;
+        if (video?.srcObject === stream) {
+          video.pause();
+          video.srcObject = null;
+        }
         stream.getTracks().forEach((track) => track.stop());
       }
 
@@ -114,8 +133,10 @@ function FaceLiveness({ className, attemptId, onVerified }) {
       canvas.height = height;
       const context = canvas.getContext("2d");
       const frames = [];
-      for (let index = 0; index < 16; index += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      // A longer sample gives a natural blink more time to occur and leaves
+      // several clear post-blink frames for a stable identity comparison.
+      for (let index = 0; index < 42; index += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 70));
         if (index >= challenge.promptFrame) setVerificationStage("blink");
         context.save();
         context.translate(width, 0);
@@ -235,7 +256,6 @@ function FaceLiveness({ className, attemptId, onVerified }) {
         >
           <video
             ref={videoRef}
-            autoPlay
             playsInline
             muted
             className="camera-preview"

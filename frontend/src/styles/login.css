@@ -225,11 +225,49 @@
 
 .mode-switch {
   display: block;
-  margin: 18px auto 0;
+  margin: 0 auto;
   padding: 8px;
   color: #a5b4fc;
   background: transparent;
   cursor: pointer;
+}
+
+.login-secondary-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  margin-top: 16px;
+}
+
+.login-success {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.24);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  font-size: 13px;
+}
+
+.reset-camera-wrap {
+  position: relative;
+}
+
+.blink-prompt {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  padding: 7px 14px;
+  color: #fff;
+  background: rgba(79, 70, 229, 0.92);
+  border: 1px solid rgba(199, 210, 254, 0.45);
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
 }
 
 .login-form button:disabled {

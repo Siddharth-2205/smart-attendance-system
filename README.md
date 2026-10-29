@@ -59,22 +59,13 @@ Open `http://localhost:5173` on the development computer. The QR scanner and fac
 
 Remove the firewall rule after the classroom test if it is no longer needed: `Remove-NetFirewallRule -DisplayName "Smart Attendance HTTPS dev 5174"` (elevated PowerShell).
 
-## Host on Render
+## Free Render preview
 
-The root `render.yaml` defines three separate services: native Node.js API (`backend`, `npm install`, `npm start`), private Docker face service (`face-liveness/Dockerfile`), and static Vite frontend (`frontend`, `dist`). The API and face matcher each need a persistent disk for SQLite data. Review Render's service and disk charges before applying the Blueprint. [Render disk requirements](https://render.com/docs/disks) · [Blueprint reference](https://render.com/docs/blueprint-spec).
+The root `render.yaml` defines a free preview deployment with a static Vite frontend, a Node API, and the Python face service. Connect the GitHub repository to Render and create a Blueprint from the branch containing this file. The preview uses seeded demo accounts and is not suitable for real student information or biometric data.
 
-1. Confirm the branch connected to Render contains `render.yaml` and the matching backend and face-service code. In Render, choose **New > Blueprint**, connect the repository, and select that branch.
-2. Review all three service runtimes, plans, and persistent disks before applying. Set the exact institutional `STUDENT_ROSTER` and `PROFESSOR_ROSTER`; do not use the laptop range or demo accounts. Render generates stable `FACE_TEMPLATE_KEY` and `FACE_SERVICE_TOKEN` secrets and wires the token only to the API and private face service.
-3. Wait for `/api/health` to report healthy. The fresh API database can start with no users; login remains unavailable until accounts are provisioned.
-4. Import approved accounts through the API service's private shell using the procedure in [backend production provisioning](backend/README.md#production-account-provisioning). Keep the import file private, remove it after import, then enroll student faces in the application.
-5. Check that the Python face service has no public URL, and test a class session from the HTTPS frontend. The backend's private service reference must point to the face service host and port, never localhost.
+Free Render services can sleep after inactivity and have ephemeral filesystems. SQLite attendance data and enrolled face templates may be lost on restarts or redeploys. The face service is a public web service in this free setup; its enrollment and verification routes require the generated shared token, which Render wires only to the API and face service. Do not put real student or face data into this preview.
 
-Render service references are refreshed when the Blueprint is synced. If a custom frontend domain is added, update API `CORS_ORIGINS` and rebuild/redeploy the frontend with its exact API URL. Back up both SQLite volumes and keep the face-template encryption key stable; losing the key makes existing face templates unreadable.
-
-Configure `VITE_API_URL` only when the phone should call a separately hosted API directly; then set it to that HTTPS API base URL and add the frontend origin to `CORS_ORIGINS`. Never put face-template keys, database credentials, or backend secrets into Vite variables.
-## Prepare for hosting without GitHub
-
-The preferred manual-deployment layout and exact environment-variable checklist are in the [no-GitHub hosting runbook](docs/deployment/no-github-production.md). It uses a private Railway Node API + Python face service with persistent volumes, and a manually uploaded Netlify Vite build. The existing `render.yaml` is an optional GitHub-based path and is not used by that runbook. No provider resources are created by the preparation steps. Review provider pricing before provisioning; paid resources require your approval.
+The static-site URL in `CORS_ORIGINS` is set to `https://smart-attendance-demo.onrender.com`. If Render assigns a different site URL, update that value to the exact frontend origin and redeploy the API. For a real deployment, use the production requirements in [backend setup](backend/README.md#production-account-provisioning), persistent storage for both databases, exact institutional rosters, and a private face service.
 
 ## Checks
 

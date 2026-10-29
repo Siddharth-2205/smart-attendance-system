@@ -6,6 +6,76 @@
   font-family: Inter, Arial, sans-serif;
 }
 
+.professor-error-toast {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: min(560px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 13px 14px;
+  transform: translateX(-50%);
+  border: 1px solid #fecaca;
+  border-left: 4px solid #dc2626;
+  border-radius: 12px;
+  background: #fff7f7;
+  color: #991b1b;
+  box-shadow: 0 12px 32px rgba(127, 29, 29, 0.16);
+  animation: professor-error-enter 180ms ease-out;
+}
+
+.professor-error-icon {
+  display: grid;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.professor-error-toast p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.professor-error-toast button {
+  display: grid;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #991b1b;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.professor-error-toast button:hover,
+.professor-error-toast button:focus-visible {
+  outline: none;
+  background: #fee2e2;
+}
+
+@keyframes professor-error-enter {
+  from { opacity: 0; translate: 0 -6px; }
+  to { opacity: 1; translate: 0 0; }
+}
+
 .schedule-editor {
   grid-column: 1 / -1;
   padding: 22px;
@@ -29,9 +99,6 @@
 .enrollment-range-field > small { color: #7b8498; font-weight: 500; font-size: 11px; }
 .enrollment-range-field > .enrollment-range-message { color: #4e50c9; font-weight: 700; }
 .enrollment-range-controls > button:disabled { opacity: 0.65; cursor: wait; }
-.schedule-days { display: flex; flex-wrap: wrap; gap: 14px; margin: 18px 0; border: 0; padding: 0; }
-.schedule-days legend { margin-bottom: 8px; color: #58647a; font-size: 12px; font-weight: 700; }
-.schedule-days label { display: flex; gap: 5px; align-items: center; font-size: 12px; }
 .schedule-editor-actions, .schedule-card-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .schedule-card-actions { margin-top: 10px; }
 @media (max-width: 600px) {
@@ -41,7 +108,14 @@
 }
 
 .professor-sidebar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   width: 250px;
+  height: 100vh;
+  height: 100dvh;
+  box-sizing: border-box;
+  overflow-y: auto;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -688,7 +762,11 @@
   }
 
   .professor-sidebar {
+    position: sticky;
+    top: 0;
     width: auto;
+    height: auto;
+    overflow: visible;
     padding: 15px;
   }
 
@@ -1307,6 +1385,43 @@
   white-space: nowrap;
 }
 
+.manual-attendance-form {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 14px;
+  border: 1px solid #e6eaf2;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.manual-attendance-form label {
+  display: grid;
+  flex: 1;
+  gap: 6px;
+  color: #58647a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.manual-attendance-form input {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #dfe3ec;
+  border-radius: 8px;
+  color: #182238;
+  background: #fff;
+  text-transform: uppercase;
+}
+
+.manual-attendance-form small {
+  color: #7b8498;
+  font-size: 11px;
+  font-weight: 500;
+}
+
 .empty-roster {
   display: flex;
   flex-direction: column;
@@ -1383,6 +1498,30 @@
   font-size: 11px;
   font-weight: 600;
 }
+
+.absent-status {
+  display: inline-block;
+  padding: 6px 10px;
+  background: #fee2e2;
+  color: #b91c1c;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.attendance-status-pill { display: inline-block; padding: 6px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+.attendance-status-pill.present { background: #dcfce7; color: #15803d; }
+.attendance-status-pill.late { background: #fef3c7; color: #b45309; }
+.attendance-status-pill.excused { background: #ede9fe; color: #6d28d9; }
+.attendance-status-pill.absent { background: #fee2e2; color: #b91c1c; }
+.roster-note { max-width: 220px; white-space: normal !important; }
+.roster-actions { display: flex; gap: 6px; }
+.roster-actions button { padding: 6px 8px; border: 1px solid #dbe1ec; border-radius: 7px; background: #fff; color: #475569; font-size: 11px; cursor: pointer; }
+.roster-actions button:hover { border-color: #a5b4fc; color: #4f46e5; }
+.roster-actions button.mark-present { border-color: #bbf7d0; color: #15803d; }
+.roster-actions button.mark-present:hover { border-color: #86efac; background: #f0fdf4; color: #166534; }
+.roster-actions button.mark-absent { border-color: #fecaca; color: #b91c1c; }
+.roster-actions button.mark-absent:hover { border-color: #fca5a5; background: #fef2f2; color: #991b1b; }
 
 .demo-controls {
   display: flex;
@@ -1507,6 +1646,11 @@
 
   .roster-card .section-heading {
     align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .manual-attendance-form {
+    align-items: stretch;
     flex-direction: column;
   }
 

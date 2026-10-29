@@ -12,8 +12,6 @@ const navigation = [
   { name: "My Classes", icon: "▤" },
   { name: "Live Attendance", icon: "◉" },
   { name: "Attendance Records", icon: "▦" },
-  { name: "Reports", icon: "▥" },
-  { name: "Settings", icon: "⚙" },
 ];
 
 // ============================================
@@ -22,7 +20,13 @@ const navigation = [
 
 const QR_VALIDITY_SECONDS = 5;
 const QR_VALIDITY_OPTIONS = [5, 10, 15, 20, 30, 45, 60, 90, 120];
-const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+function greetingForHour(hour) {
+  if (hour >= 5 && hour < 12) return "Good morning";
+  if (hour < 17 && hour >= 12) return "Good afternoon";
+  if (hour < 21 && hour >= 17) return "Good evening";
+  return "Good night";
+}
 
 // ============================================
 // MAIN PROFESSOR DASHBOARD
@@ -31,6 +35,12 @@ const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satur
 function ProfessorDashboard({ professorId, onLogout }) {
   // Navigation
   const [activeTab, setActiveTab] = useState("Overview");
+  const [currentTime, setCurrentTime] = useState(() => new Date());
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setCurrentTime(new Date()), 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   // Class selection
   const [classes, setClasses] = useState([]);
@@ -57,12 +67,14 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
   // Demo attendance records
   const [demoAttendance, setDemoAttendance] = useState([]);
+  const [manualAttendanceStudentId, setManualAttendanceStudentId] = useState("");
+  const [manualAttendanceSaving, setManualAttendanceSaving] = useState(false);
 
   // ============================================
   // CURRENT DATE
   // ============================================
 
-  const today = new Date().toLocaleDateString("en-IN", {
+  const today = currentTime.toLocaleDateString("en-IN", {
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -77,8 +89,6 @@ function ProfessorDashboard({ professorId, onLogout }) {
         if (!active) return;
         const mapped = result.map((course) => ({
           ...course,
-          time: `${course.startTime} - ${course.endTime}`,
-          room: course.beaconId,
         }));
         setClasses(mapped);
         const selected = mapped.find((course) => course.activeSessionCode) || mapped[0] || null;
@@ -116,11 +126,12 @@ function ProfessorDashboard({ professorId, onLogout }) {
         setSessionToken(qr.token);
         setQrValiditySeconds(qr.ttlSeconds ?? QR_VALIDITY_SECONDS);
         setSecondsLeft(Math.max(0, Math.ceil((Date.parse(qr.expiresAt) - Date.now()) / 1000)));
-        setDemoAttendance(attendance.roster.filter((student) => student.present).map((student) => ({
+        setDemoAttendance(attendance.roster.map((student) => ({
           id: student.studentId,
           name: student.name,
-          status: "Present",
-          time: student.markedAt ? new Date(student.markedAt).toLocaleTimeString("en-IN") : "?",
+          status: student.status === "late" ? "Late" : student.status === "excused" ? "Excused" : student.present ? "Present" : "Absent",
+          note: student.note || "",
+          time: student.markedAt ? new Date(student.markedAt).toLocaleTimeString("en-IN") : "—",
         })));
         setPageError("");
       } catch (err) {
@@ -189,14 +200,60 @@ function ProfessorDashboard({ professorId, onLogout }) {
     }
   };
 
+  const updateStudentAttendance = async (student, status) => {
+    try {
+      const result = await api(`/api/sessions/${encodeURIComponent(sessionId)}/attendance/${encodeURIComponent(student.id)}`, {
+        method: "PATCH", body: { status, note: "" },
+      });
+      setDemoAttendance((previous) => previous.map((item) => item.id === student.id ? {
+        ...item,
+        status: result.status === "absent" ? "Absent" : "Present",
+        note: "",
+        time: result.status === "absent" ? "—" : new Date(result.markedAt).toLocaleTimeString("en-IN"),
+      } : item));
+      setPageError("");
+    } catch (err) { setPageError(err.message); }
+  };
+
+  const markStudentPresentManually = async (event) => {
+    event.preventDefault();
+    const studentId = manualAttendanceStudentId.trim().toUpperCase();
+    if (!studentId) return;
+    if (demoAttendance.some((item) => item.id.toUpperCase() === studentId && item.status === "Present")) {
+      setPageError(`${studentId} is already marked present.`);
+      return;
+    }
+
+    setManualAttendanceSaving(true);
+    try {
+      const result = await api(`/api/sessions/${encodeURIComponent(sessionId)}/attendance/${encodeURIComponent(studentId)}`, {
+        method: "PATCH", body: { status: "present", note: "" },
+      });
+      setDemoAttendance((previous) => {
+        const markedStudent = {
+          id: studentId, name: result.name || studentId, status: "Present", note: "",
+          time: new Date(result.markedAt).toLocaleTimeString("en-IN"),
+        };
+        return previous.some((item) => item.id === studentId)
+          ? previous.map((item) => item.id === studentId ? { ...item, ...markedStudent } : item)
+          : [...previous, markedStudent];
+      });
+      setManualAttendanceStudentId("");
+      setPageError("");
+    } catch (err) {
+      setPageError(err.message);
+    } finally {
+      setManualAttendanceSaving(false);
+    }
+  };
+
   const editSchedule = (course = null) => {
     setPageError("");
     setScheduleForm(course ? {
-      id: course.id, name: course.name, code: course.code, days: course.days || [],
-      startTime: course.startTime, endTime: course.endTime, beaconId: course.beaconId,
+      id: course.id, name: course.name, code: course.code,
       qrTtlSeconds: course.qrTtlSeconds ?? QR_VALIDITY_SECONDS,
       students: course.students || 0, studentIdsText: (course.studentIds || []).join(", "), rangeFrom: "", rangeTo: "", rangeMessage: "",
-    } : { name: "", code: "", days: ["Monday"], startTime: "09:00", endTime: "10:00", beaconId: "", qrTtlSeconds: QR_VALIDITY_SECONDS, students: 0, studentIdsText: "", rangeFrom: "", rangeTo: "", rangeMessage: "" });
+    } : { name: "", code: "", qrTtlSeconds: QR_VALIDITY_SECONDS, students: 0, studentIdsText: "", rangeFrom: "", rangeTo: "", rangeMessage: "" });
   };
 
   const addRegisteredStudentsInRange = async () => {
@@ -239,9 +296,9 @@ function ProfessorDashboard({ professorId, onLogout }) {
     try {
       const saved = await api(scheduleForm.id ? `/api/teacher/courses/${encodeURIComponent(scheduleForm.id)}` : "/api/teacher/courses", {
         method: scheduleForm.id ? "PUT" : "POST",
-        body: { ...scheduleForm, studentIds: scheduleForm.studentIdsText.split(",").map((id) => id.trim()).filter(Boolean), beaconId: scheduleForm.beaconId || `Room ${scheduleForm.code}` },
+        body: { ...scheduleForm, studentIds: scheduleForm.studentIdsText.split(",").map((id) => id.trim()).filter(Boolean) },
       });
-      const course = { ...saved.course, time: `${saved.course.startTime} - ${saved.course.endTime}`, room: saved.course.beaconId };
+      const course = saved.course;
       setClasses((previous) => scheduleForm.id ? previous.map((item) => item.id === course.id ? course : item) : [...previous, course]);
       if (selectedClass?.id === course.id) setSelectedClass(course);
       setScheduleForm(null);
@@ -307,11 +364,11 @@ function ProfessorDashboard({ professorId, onLogout }) {
   // ============================================
 
   const currentClass = selectedClass || classes[0] || {
-    name: "No courses available", code: "", room: "", students: 0,
+    name: "No courses available", code: "", students: 0,
   };
 
   const presentCount = demoAttendance.filter(
-    (student) => student.status === "Present"
+    (student) => student.status === "Present" || student.status === "Late"
   ).length;
 
   const attendancePercentage =
@@ -327,7 +384,11 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
   return (
     <div className="professor-layout">
-      {pageError && <p className="professor-login-error" role="alert">{pageError}</p>}
+      {pageError && <div className="professor-error-toast" role="alert">
+        <span className="professor-error-icon" aria-hidden="true">!</span>
+        <p>{pageError}</p>
+        <button type="button" aria-label="Dismiss error" onClick={() => setPageError("")}>×</button>
+      </div>}
 
       {/* ========================================
           SIDEBAR
@@ -452,7 +513,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                 </p>
 
                 <h2>
-                  Good morning, Professor 👋
+                  {greetingForHour(currentTime.getHours())}, Professor 👋
                 </h2>
 
                 <p>
@@ -479,12 +540,12 @@ function ProfessorDashboard({ professorId, onLogout }) {
               <article className="stat-card">
 
                 <div className="stat-heading">
-                  Classes Today <span>▤</span>
+                  Assigned Classes <span>▤</span>
                 </div>
 
                 <strong>{classes.length}</strong>
 
-                <p>Your scheduled classes</p>
+                <p>Your courses</p>
 
               </article>
 
@@ -496,7 +557,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
                 <strong>{presentCount}</strong>
 
-                <p>Recorded in this demo</p>
+                <p>Recorded in the active session</p>
 
               </article>
 
@@ -523,7 +584,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                 </div>
 
                 <strong>
-                  {sessionActive ? 1 : 0}
+                  {classes.filter((course) => course.activeSessionCode).length}
                 </strong>
 
                 <p>
@@ -543,10 +604,10 @@ function ProfessorDashboard({ professorId, onLogout }) {
               <div className="section-heading">
 
                 <div>
-                  <h2>Today's Schedule</h2>
+                  <h2>Your Classes</h2>
 
                   <p>
-                    Your scheduled classes at a glance.
+                    Switch attendance on to make a class available to students.
                   </p>
                 </div>
 
@@ -578,18 +639,15 @@ function ProfessorDashboard({ professorId, onLogout }) {
                       <h3>{item.name}</h3>
 
                       <p>
-                        {item.code} · {item.room}
+                        {item.code}
                       </p>
 
-                      <span>{item.time}</span>
+                    <span>{item.activeSessionCode ? "Attendance session active" : "Attendance session off"}</span>
 
                     </div>
 
                     <span className="class-status">
-                      {sessionActive &&
-                      currentClass.code === item.code
-                        ? "Live"
-                        : "Upcoming"}
+                      {item.activeSessionCode ? "Live" : "Session off"}
                     </span>
 
                     <button
@@ -673,26 +731,6 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
                 </button>
 
-                <button
-                  type="button"
-                  className="quick-action"
-                  onClick={() => setActiveTab("Reports")}
-                >
-
-                  <span>▥</span>
-
-                  <div>
-                    <strong>View Reports</strong>
-
-                    <p>
-                      Explore attendance reports.
-                    </p>
-                  </div>
-
-                  <b>→</b>
-
-                </button>
-
               </div>
 
             </section>
@@ -714,8 +752,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                 <h2>Your Classes</h2>
 
                 <p>
-                  View your assigned courses and manage
-                  attendance.
+                  Switch on an attendance session to make a class available to students.
                 </p>
               </div>
 
@@ -723,16 +760,14 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
             <button type="button" className="start-button" onClick={() => editSchedule()}>+ Add class</button>
             {scheduleForm && <form className="schedule-editor" onSubmit={saveSchedule}>
-              <h3>{scheduleForm.id ? "Edit scheduled class" : "Add scheduled class"}</h3>
+              <h3>{scheduleForm.id ? "Edit class" : "Add class"}</h3>
               <div className="schedule-editor-grid">
                 <label>Course name<input required maxLength={100} value={scheduleForm.name} onChange={(e) => setScheduleForm({ ...scheduleForm, name: e.target.value })} /></label>
                 <label>Course code<input required maxLength={20} value={scheduleForm.code} onChange={(e) => setScheduleForm({ ...scheduleForm, code: e.target.value.toUpperCase() })} /></label>
-                <label>Start time<input type="time" required value={scheduleForm.startTime} onChange={(e) => setScheduleForm({ ...scheduleForm, startTime: e.target.value })} /></label>
-                <label>End time<input type="time" required value={scheduleForm.endTime} onChange={(e) => setScheduleForm({ ...scheduleForm, endTime: e.target.value })} /></label>
-                <label>Room<input required value={scheduleForm.beaconId} placeholder="e.g. Room 204" onChange={(e) => setScheduleForm({ ...scheduleForm, beaconId: e.target.value })} /></label>
                 <label>QR code validity<select value={scheduleForm.qrTtlSeconds} onChange={(e) => setScheduleForm({ ...scheduleForm, qrTtlSeconds: Number(e.target.value) })}>{QR_VALIDITY_OPTIONS.map((seconds) => <option key={seconds} value={seconds}>{seconds} seconds</option>)}</select><small>Each QR token for this class expires after the selected time.</small></label>
                 <div className="enrollment-range-field">
                   <strong>Add registered students by roll-number range</strong>
+                  <small>Use this as the primary enrollment method. The range is inclusive and adds matching registered accounts.</small>
                   <div className="enrollment-range-controls">
                     <label>From<input value={scheduleForm.rangeFrom} placeholder="25BCS001" onChange={(e) => setScheduleForm({ ...scheduleForm, rangeFrom: e.target.value.toUpperCase() })} /></label>
                     <label>To<input value={scheduleForm.rangeTo} placeholder="25BCS300" onChange={(e) => setScheduleForm({ ...scheduleForm, rangeTo: e.target.value.toUpperCase() })} /></label>
@@ -740,12 +775,11 @@ function ProfessorDashboard({ professorId, onLogout }) {
                       {addingStudentRange ? "Finding students..." : "Add range"}
                     </button>
                   </div>
-                  <small>The range is inclusive and must use one admission year and department. Only registered student accounts are added.</small>
+                  <small>Use one admission year and department, such as 25BCS001 to 25BCS300. Only registered student accounts are added.</small>
                   {scheduleForm.rangeMessage ? <small className="enrollment-range-message" role="status">{scheduleForm.rangeMessage}</small> : null}
                 </div>
-                <label className="enrollment-list-field">Enrolled student roll numbers<input required value={scheduleForm.studentIdsText} placeholder="23BCS001, 24BDA002, 25BEC003" onChange={(e) => setScheduleForm({ ...scheduleForm, studentIdsText: e.target.value })} /><small>You can still enter students from other batches manually. Use YYBCSNNN (CSE), YYBDANNN (DSAI), or YYBECNNN (ECE); students must have registered accounts.</small></label>
+                <label className="enrollment-list-field">Enrolled student roll numbers (optional)<input value={scheduleForm.studentIdsText} placeholder="Add individual roll numbers if needed" onChange={(e) => setScheduleForm({ ...scheduleForm, studentIdsText: e.target.value })} /><small>Use this for individual students or batches outside the range. Format: YYBCSNNN (CSE), YYBDANNN (DSAI), or YYBECNNN (ECE); accounts must be registered.</small></label>
               </div>
-              <fieldset className="schedule-days"><legend>Class days</legend>{WEEKDAYS.map((day) => <label key={day}><input type="checkbox" checked={scheduleForm.days.includes(day)} onChange={(e) => setScheduleForm({ ...scheduleForm, days: e.target.checked ? [...scheduleForm.days, day] : scheduleForm.days.filter((item) => item !== day) })} />{day.slice(0, 3)}</label>)}</fieldset>
               <div className="schedule-editor-actions"><button className="start-button" type="submit" disabled={scheduleSaving || addingStudentRange}>{scheduleSaving ? "Saving..." : "Save class"}</button><button type="button" className="secondary-button" onClick={() => setScheduleForm(null)}>Cancel</button></div>
             </form>}
 
@@ -765,10 +799,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                     </div>
 
                     <span className="class-status">
-                      {sessionActive &&
-                      currentClass.code === item.code
-                        ? "Live"
-                        : "Upcoming"}
+                      {item.activeSessionCode ? "Live" : "Session off"}
                     </span>
 
                   </div>
@@ -778,15 +809,10 @@ function ProfessorDashboard({ professorId, onLogout }) {
                   <p className="course-code">
                     {item.code}
                   </p>
-                  <p className="course-code">{(item.days || []).join(", ")} · {item.time}</p>
 
                   <div className="course-meta">
 
                     <p>QR valid for {item.qrTtlSeconds ?? QR_VALIDITY_SECONDS} seconds</p>
-
-                    <p>◷ {item.time}</p>
-
-                    <p>⌂ {item.room}</p>
 
                     <p>
                       ♙ {item.students} enrolled students
@@ -1069,14 +1095,6 @@ function ProfessorDashboard({ professorId, onLogout }) {
                   </div>
 
                   <div>
-                    <span>Classroom</span>
-
-                    <strong>
-                      {currentClass.room}
-                    </strong>
-                  </div>
-
-                  <div>
                     <span>Enrolled Students</span>
 
                     <strong>
@@ -1173,17 +1191,31 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
                   <h2>Live Attendance Roster</h2>
 
-                  <p>
-                    Monitor attendance recorded during this session.
-                  </p>
+                    <p>Monitor and update student attendance during the active session.</p>
 
                 </div>
 
                 <span className="roster-count">
-                  {presentCount} / {currentClass.students} Present
+                  {presentCount} / {demoAttendance.length} Present
                 </span>
 
               </div>
+
+              <form className="manual-attendance-form" onSubmit={markStudentPresentManually}>
+                <label htmlFor="manual-attendance-student">Manually mark attendance (optional)
+                  <input
+                    id="manual-attendance-student"
+                    value={manualAttendanceStudentId}
+                    onChange={(event) => setManualAttendanceStudentId(event.target.value.toUpperCase())}
+                    placeholder="Enter any registered student's roll number"
+                    autoComplete="off"
+                  />
+                  <small>Use this if a student attended but missed check-in. Registered students from any branch can be marked.</small>
+                </label>
+                <button type="submit" className="start-button" disabled={!sessionActive || !manualAttendanceStudentId.trim() || manualAttendanceSaving}>
+                  {manualAttendanceSaving ? "Adding attendance..." : "Mark present"}
+                </button>
+              </form>
 
               {demoAttendance.length === 0 ? (
 
@@ -1191,10 +1223,10 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
                   <div>♙</div>
 
-                  <h3>No attendance recorded yet</h3>
+                    <h3>No students in this session roster</h3>
 
                   <p>
-                    Students who complete attendance will appear here.
+                      Enrolled students will appear here when the session starts.
                   </p>
 
                 </div>
@@ -1212,6 +1244,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                         <th>Student ID</th>
                         <th>Time</th>
                         <th>Status</th>
+                        <th>Actions</th>
                       </tr>
 
                     </thead>
@@ -1230,10 +1263,17 @@ function ProfessorDashboard({ professorId, onLogout }) {
 
                           <td>
 
-                            <span className="present-status">
-                              Present
+                            <span className={`attendance-status-pill ${student.status.toLowerCase()}`}>
+                              {student.status}
                             </span>
 
+                          </td>
+
+                          <td>
+                            {sessionActive && <div className="roster-actions">
+                              {student.status !== "Present" && <button type="button" className="mark-present" onClick={() => updateStudentAttendance(student, "present")}>Present</button>}
+                              {student.status !== "Absent" && <button type="button" className="mark-absent" onClick={() => updateStudentAttendance(student, "absent")}>Absent</button>}
+                            </div>}
                           </td>
 
                         </tr>
@@ -1279,7 +1319,7 @@ function ProfessorDashboard({ professorId, onLogout }) {
                   <div className="attendance-session-details">
                     <strong>{session.courseName} <span>({session.courseCode})</span></strong>
                     <span>{new Date(session.createdAt).toLocaleString("en-IN")}</span>
-                    <span>{session.presentCount} present ? {Math.max(0, session.totalCount - session.presentCount)} absent ? {session.totalCount} students</span>
+                    <span>{session.presentCount} present · {session.lateCount || 0} late · {session.excusedCount || 0} excused · {session.absentCount ?? Math.max(0, session.totalCount - session.presentCount)} absent</span>
                   </div>
                   {session.status === "closed" ? (
                     <button type="button" className="attendance-export-button" disabled={exportingSessionId === session.sessionId} onClick={() => downloadAttendanceExcel(session)}>
@@ -1291,69 +1331,6 @@ function ProfessorDashboard({ professorId, onLogout }) {
               ))}
             </div>
           </section>
-        )}
-
-        {/* ========================================
-            REPORTS
-        ======================================== */}
-
-        {activeTab === "Reports" && (
-
-          <section className="placeholder-panel">
-
-            <div className="placeholder-icon">
-              ▥
-            </div>
-
-            <h2>Attendance Reports</h2>
-
-            <p>
-              Attendance summaries, class-wise statistics,
-              and downloadable reports will be implemented
-              after backend integration.
-            </p>
-
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => setActiveTab("Attendance Records")}
-            >
-              View Attendance Records →
-            </button>
-
-          </section>
-
-        )}
-
-        {/* ========================================
-            SETTINGS
-        ======================================== */}
-
-        {activeTab === "Settings" && (
-
-          <section className="placeholder-panel">
-
-            <div className="placeholder-icon">
-              ⚙
-            </div>
-
-            <h2>Settings</h2>
-
-            <p>
-              Professor profile, account preferences, and
-              session settings will be available here.
-            </p>
-
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={onLogout}
-            >
-              Logout
-            </button>
-
-          </section>
-
         )}
 
         {/* FOOTER */}

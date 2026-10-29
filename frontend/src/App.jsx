@@ -132,6 +132,15 @@ function App() {
       <Dashboard
         studentId={studentId}
         onAttendance={handleAttendance}
+        onLogout={() => {
+          logout();
+          setStudentId("");
+          setSelectedClass(null);
+          setAttempt(null);
+          setVerifiedQR(null);
+          setAuthError("");
+          setCurrentPage("login");
+        }}
       />
       </Suspense>
     );

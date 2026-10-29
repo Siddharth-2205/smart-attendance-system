@@ -72,12 +72,19 @@ test("server-issued QR tokens gate face verification and attendance", async (t) 
   const professor = await post("/api/auth/login", { loginId: "T001", password: "teacher123" });
   assert.equal(professor.response.status, 200);
   const createdCourse = await post("/api/teacher/courses", {
-    name: "QR Flow Test", code: "QRTEST", days: ["Monday"], startTime: "16:00", endTime: "17:00", beaconId: "Room Test", studentIds: ["23BCS001"],
+    name: "QR Flow Test", code: "QRTEST", days: ["Monday"], beaconId: "Room Test", studentIds: ["23BCS001"], attendanceThreshold: 75,
   }, professor.payload.token);
   assert.equal(createdCourse.response.status, 201);
+  assert.equal(createdCourse.payload.course.attendanceThreshold, 75);
+  assert.equal(createdCourse.payload.course.startTime, undefined);
+  assert.equal(createdCourse.payload.course.endTime, undefined);
   const session = await post("/api/sessions", { courseId: createdCourse.payload.course.id }, professor.payload.token);
   assert.equal(session.response.status, 201);
   const sessionCode = session.payload.code;
+  const initialRosterResponse = await fetch(`${base}/api/sessions/${sessionCode}/attendance`, { headers: { Authorization: `Bearer ${professor.payload.token}` } });
+  const initialRoster = await initialRosterResponse.json();
+  assert.equal(initialRoster.roster.length, 1, "live roster includes every student in the session snapshot");
+  assert.equal(initialRoster.roster[0].status, "absent");
   const qrResponse = await fetch(`${base}/api/sessions/${sessionCode}/qr`, { headers: { Authorization: `Bearer ${professor.payload.token}` } });
   const qr = await qrResponse.json();
   assert.equal(qrResponse.status, 200);
@@ -87,6 +94,10 @@ test("server-issued QR tokens gate face verification and attendance", async (t) 
   assert.equal((await duplicateDisplay.json()).token, qr.token, "all students can use the same current session QR");
 
   const student = await post("/api/auth/login", { loginId: "23BCS001", password: "student123" });
+  const activeDashboardResponse = await fetch(`${base}/api/student/dashboard`, { headers: { Authorization: `Bearer ${student.payload.token}` } });
+  const activeDashboard = await activeDashboardResponse.json();
+  assert.deepEqual(activeDashboard.classes.map((course) => course.courseId), [createdCourse.payload.course.id], "students only receive courses with an active session");
+  assert.equal(activeDashboard.summary.activeSessions, 1);
   const unauthorizedStudent = await post("/api/auth/login", { loginId: "23BCS002", password: "student123" });
   const attempt = await post("/api/attendance/attempts", { courseId: createdCourse.payload.course.id }, student.payload.token);
   assert.equal(attempt.response.status, 201);
@@ -120,7 +131,8 @@ test("server-issued QR tokens gate face verification and attendance", async (t) 
 
   const challenge = await post(`/api/attendance/attempts/${attempt.payload.attemptId}/face/challenge`, {}, student.payload.token);
   assert.equal(challenge.response.status, 200);
-  const frames = Array.from({ length: 10 }, () => image);
+  assert.ok(challenge.payload.promptFrame >= 8 && challenge.payload.promptFrame <= 11);
+  const frames = Array.from({ length: 28 }, () => image);
   blinkPass = false;
   const failedFace = await post(`/api/attendance/attempts/${attempt.payload.attemptId}/face`, { challengeId: challenge.payload.challengeId, frames }, student.payload.token);
   assert.equal(failedFace.response.status, 403);
@@ -140,6 +152,11 @@ test("server-issued QR tokens gate face verification and attendance", async (t) 
   assert.deepEqual(completed.payload.verifiedSteps, ["qr", "blink", "face"]);
   const duplicateCompletion = await post(`/api/attendance/attempts/${attempt.payload.attemptId}/complete`, {}, student.payload.token);
   assert.equal(duplicateCompletion.response.status, 409);
+  const presentRosterResponse = await fetch(`${base}/api/sessions/${sessionCode}/attendance`, { headers: { Authorization: `Bearer ${professor.payload.token}` } });
+  const presentRoster = await presentRosterResponse.json();
+  assert.equal(presentRoster.roster[0].status, "present", "live roster reflects successful student check-in");
+  const openHistoryResponse = await fetch(`${base}/api/student/attendance-history`, { headers: { Authorization: `Bearer ${student.payload.token}` } });
+  assert.deepEqual((await openHistoryResponse.json()).history, [], "student history includes completed sessions only");
   const database = new DatabaseSync(path.join(dataDir, "attendance.sqlite"));
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM attendance_records WHERE student_id=? AND session_id=?").get("23BCS001", sessionCode).count, 1);
   const duplicateRow = database.prepare("INSERT OR IGNORE INTO attendance_records(student_id,course_id,session_id,marked_at,date,status,verified_steps_json) VALUES(?,?,?,?,?,?,?)")
@@ -166,6 +183,29 @@ test("server-issued QR tokens gate face verification and attendance", async (t) 
   assert.equal(persistedRoster.roster[0].present, true, "attendance should survive an API restart");
   assert.equal(persistedRoster.roster[0].markedAt, completed.payload.markedAt);
 
+  const lateResponse = await fetch(`${base}/api/sessions/${sessionCode}/attendance/23BCS001`, {
+    method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${professor.payload.token}` },
+    body: JSON.stringify({ status: "late", note: "Arrived after the bell" }),
+  });
+  assert.equal(lateResponse.status, 200, "professor can mark a roster member late");
+  const missingNoteResponse = await fetch(`${base}/api/sessions/${sessionCode}/attendance/23BCS001`, {
+    method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${professor.payload.token}` },
+    body: JSON.stringify({ status: "excused", note: " " }),
+  });
+  assert.equal(missingNoteResponse.status, 400, "late and excused marks require a note");
+  const excusedResponse = await fetch(`${base}/api/sessions/${sessionCode}/attendance/23BCS001`, {
+    method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${professor.payload.token}` },
+    body: JSON.stringify({ status: "excused", note: "Approved medical absence" }),
+  });
+  assert.equal(excusedResponse.status, 200, "professor can record an approved absence as excused");
+  const excusedRosterResponse = await fetch(`${base}/api/sessions/${sessionCode}/attendance`, { headers: { Authorization: `Bearer ${professor.payload.token}` } });
+  assert.equal((await excusedRosterResponse.json()).roster[0].status, "excused");
+  const lateAgainResponse = await fetch(`${base}/api/sessions/${sessionCode}/attendance/23BCS001`, {
+    method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${professor.payload.token}` },
+    body: JSON.stringify({ status: "late", note: "Arrived after the bell" }),
+  });
+  assert.equal(lateAgainResponse.status, 200);
+
   const close = await post(`/api/sessions/${sessionCode}/close`, {}, professor.payload.token);
   assert.equal(close.response.status, 200);
   const inactive = await post(`/api/attendance/attempts/${attempt.payload.attemptId}/qr`, { sessionId: qr.sessionId, token: qr.token }, student.payload.token);
@@ -173,7 +213,33 @@ test("server-issued QR tokens gate face verification and attendance", async (t) 
   assert.equal(inactive.payload.error.code, "SESSION_CLOSED");
   const attendance = await fetch(`${base}/api/sessions/${sessionCode}/attendance`, { headers: { Authorization: `Bearer ${professor.payload.token}` } });
   const roster = await attendance.json();
-  assert.equal(roster.roster[0].present, true, "recorded attendance remains present after session close");
+  assert.equal(roster.roster[0].status, "late", "late status persists after session close");
+  assert.equal(roster.roster[0].note, "Arrived after the bell");
+  const closedHistoryResponse = await fetch(`${base}/api/student/attendance-history`, { headers: { Authorization: `Bearer ${student.payload.token}` } });
+  const closedHistory = await closedHistoryResponse.json();
+  assert.equal(closedHistory.history.length, 1);
+  assert.equal(closedHistory.history[0].status, "late", "student history shows professor status updates");
+  assert.equal(closedHistory.history[0].note, "Arrived after the bell");
+  const auditResponse = await fetch(`${base}/api/teacher/attendance-audit`, { headers: { Authorization: `Bearer ${professor.payload.token}` } });
+  assert.equal(auditResponse.status, 200);
+  const audit = await auditResponse.json();
+  assert.ok(audit.entries.some((entry) => entry.actorRole === "student" && entry.newStatus === "present"), "verified check-in is audited");
+  assert.ok(audit.entries.some((entry) => entry.actorRole === "professor" && entry.newStatus === "late" && entry.note === "Arrived after the bell"), "professor correction is audited with its note");
+
+  const secondSession = await post("/api/sessions", { courseId: createdCourse.payload.course.id }, professor.payload.token);
+  assert.equal(secondSession.response.status, 201);
+  const closeSecond = await post(`/api/sessions/${secondSession.payload.code}/close`, {}, professor.payload.token);
+  assert.equal(closeSecond.response.status, 200);
+  const studentDashboardResponse = await fetch(`${base}/api/student/dashboard`, { headers: { Authorization: `Bearer ${student.payload.token}` } });
+  const studentDashboard = await studentDashboardResponse.json();
+  assert.deepEqual(studentDashboard.classes, [], "closed sessions no longer appear on the student dashboard");
+  const courseAttendance = studentDashboard.courses.find((course) => course.courseId === createdCourse.payload.course.id);
+  assert.equal(courseAttendance.attendanceRate, 50);
+  assert.equal(courseAttendance.lowAttendance, true, "students near/below the configured threshold are flagged");
+  assert.equal(studentDashboard.summary.overallAttendance, 50);
+  const alertsResponse = await fetch(`${base}/api/teacher/attendance-alerts`, { headers: { Authorization: `Bearer ${professor.payload.token}` } });
+  const alerts = await alertsResponse.json();
+  assert.ok(alerts.alerts.some((alert) => alert.studentId === "23BCS001" && alert.attendanceRate === 50));
   const logout = await fetch(`${base}/api/auth/logout`, { method: "POST", headers: { Authorization: `Bearer ${student.payload.token}` } });
   assert.equal(logout.status, 200);
   const afterLogout = await fetch(`${base}/api/student/dashboard`, { headers: { Authorization: `Bearer ${student.payload.token}` } });

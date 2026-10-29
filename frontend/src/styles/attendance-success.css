@@ -25,6 +25,15 @@
   color: #f8fafc;
 }
 
+.success-confetti-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+}
+
 
 /* ================================
    CARD

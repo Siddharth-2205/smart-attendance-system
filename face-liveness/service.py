@@ -48,8 +48,8 @@ class Enrollment(BaseModel):
 
 class Verification(BaseModel):
     studentId: str = Field(min_length=1, max_length=32)
-    frames: list[str] = Field(min_length=10, max_length=16)
-    promptFrame: int = Field(ge=4, le=6)
+    frames: list[str] = Field(min_length=10, max_length=42)
+    promptFrame: int = Field(ge=8, le=11)
 
 
 def connect() -> sqlite3.Connection:
@@ -190,27 +190,36 @@ def verify(request: Verification, _auth: None = Depends(require_backend)):
         fail(422, "Keep both eyes open and visible before the blink prompt.")
 
     saw_closed = False
-    reopened_location = None
+    candidates = []
+    last_candidate_index = -4
     for index, result in measurements:
         if index < request.promptFrame or result is None:
             continue
         (left, right), image, location = result
-        open_eyes = left >= baseline_left * 0.82 and right >= baseline_right * 0.82
-        closed_eyes = left <= baseline_left * 0.72 and right <= baseline_right * 0.72
+        left_ratio = left / baseline_left
+        right_ratio = right / baseline_right
+        open_eyes = left_ratio >= 0.80 and right_ratio >= 0.80
+        closed_eyes = (left_ratio + right_ratio) / 2 <= 0.78
         if closed_eyes:
             saw_closed = True
-        elif saw_closed and open_eyes:
-            reopened_location = (image, location)
-            break
+        elif saw_closed and open_eyes and index - last_candidate_index >= 4:
+            candidates.append((image, location))
+            last_candidate_index = index
 
-    if reopened_location is None:
-        fail(422, "Blink once when prompted, then keep your eyes open and try again.")
-    image, location = reopened_location
-    encodings = face_recognition.face_encodings(image, known_face_locations=[location], num_jitters=1)
-    if len(encodings) != 1:
-        fail(422, "The face could not be analyzed. Improve the lighting and try again.")
-    encoding = encodings[0]
-    if float(face_recognition.face_distance([enrolled], encoding)[0]) > 0.50:
+    if not candidates:
+        if saw_closed:
+            fail(422, "Blink detected. Keep both eyes open after the prompt and try again.")
+        fail(422, "Blink not detected. Close both eyes naturally once when the prompt appears.")
+    distances = []
+    for image, location in candidates[:7]:
+        encodings = face_recognition.face_encodings(image, known_face_locations=[location], num_jitters=1)
+        if len(encodings) == 1:
+            distances.append(float(face_recognition.face_distance([enrolled], encodings[0])[0]))
+    if len(distances) < 3:
+        fail(422, "Keep your face centered and clearly visible after blinking.")
+    median_distance = float(np.median(distances))
+    matching_frames = sum(distance <= 0.50 for distance in distances)
+    if median_distance > 0.50 or matching_frames < 3:
         fail(403, "The face does not match the student enrollment.")
     return {"verified": True, "blinkVerified": True}
 

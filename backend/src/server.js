@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { createHash, createHmac, randomBytes, randomInt, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import path from "node:path";
-import { completeAttendanceTransaction, loadState, saveState, sql } from "./database.js";
+import { completeAttendanceTransaction, loadState, saveState, setAttendanceStatus, sql } from "./database.js";
 
 const port = Number(process.env.PORT || 4000);
 const production = process.env.NODE_ENV === "production";
@@ -34,6 +34,7 @@ function verifyPassword(value, stored) {
 const hashToken = (token) => createHash("sha256").update(token).digest("hex");
 const sessionTtlSeconds = Math.max(600, Math.min(86_400, Number(process.env.SESSION_TTL_SECONDS) || 28_800));
 const loginFailureWindows = new Map();
+const passwordResetChallenges = new Map();
 const loginFailureLimit = 10;
 const loginFailureWindowMs = 15 * 60 * 1000;
 const dummyPasswordHash = hashPassword(randomBytes(32).toString("hex"));
@@ -97,9 +98,9 @@ const isOnStudentRoster = (loginId) => studentRoster.has(loginId) || (
   && Number(loginId.slice(-3)) <= rosterRange.max
 );
 const initialCourses = [
-  { id: "CS301", name: "Database Management Systems", code: "CS301", startTime: "09:00", endTime: "10:00", beaconId: "Room 301", students: 5, studentIds: ["23BCS001", "23BCS002", "23BCS003", "23BCS004", "23BCS005"] },
-  { id: "CS302", name: "Computer Networks", code: "CS302", startTime: "11:00", endTime: "12:00", beaconId: "Room 302", students: 5, studentIds: ["23BCS001", "23BCS002", "23BCS003", "23BCS004", "23BCS005"] },
-  { id: "CS303", name: "Software Engineering", code: "CS303", startTime: "14:00", endTime: "15:00", beaconId: "Room 303", students: 5, studentIds: ["23BCS001", "23BCS002", "23BCS003", "23BCS004", "23BCS005"] },
+  { id: "CS301", name: "Database Management Systems", code: "CS301", beaconId: "Room 301", students: 5, studentIds: ["23BCS001", "23BCS002", "23BCS003", "23BCS004", "23BCS005"] },
+  { id: "CS302", name: "Computer Networks", code: "CS302", beaconId: "Room 302", students: 5, studentIds: ["23BCS001", "23BCS002", "23BCS003", "23BCS004", "23BCS005"] },
+  { id: "CS303", name: "Software Engineering", code: "CS303", beaconId: "Room 303", students: 5, studentIds: ["23BCS001", "23BCS002", "23BCS003", "23BCS004", "23BCS005"] },
 ];
 const seed = () => ({
   users: ["23BCS001", "23BCS002", "23BCS003", "23BCS004", "23BCS005"].map((id, i) => ({ loginId: id, studentId: id, name: `Student ${i + 1}`, role: "student", passwordHash: hashPassword("student123"), faceImage: null, demoAccount: true })),
@@ -143,6 +144,31 @@ async function load() {
 }
 const allUsers = () => [...db.users, ...db.usersExtra];
 const safeUser = (u) => ({ loginId: u.loginId, studentId: u.studentId, name: u.name, role: u.role });
+function studentAttendanceHistory(studentId) {
+  const coursesById = new Map(db.courses.map((course) => [course.id, course]));
+  return db.sessions
+    .filter((session) => session.status === "closed")
+    .filter((session) => {
+      const course = coursesById.get(session.courseId);
+      const roster = session.rosterStudentIds?.length ? session.rosterStudentIds : course?.studentIds || [];
+      return roster.includes(studentId);
+    })
+    .map((session) => {
+      const course = coursesById.get(session.courseId);
+      const record = db.attendance.find((item) => item.studentId === studentId && item.sessionId === session.code);
+      return {
+        sessionId: session.code,
+        courseId: course.id,
+        courseName: course.name,
+        courseCode: course.code,
+        date: String(session.createdAt || session.closedAt || now()).slice(0, 10),
+        status: record?.status || "absent",
+        markedAt: record?.markedAt || null,
+        note: record?.note || "",
+      };
+    })
+    .sort((a, b) => b.date.localeCompare(a.date) || b.sessionId.localeCompare(a.sessionId));
+}
 const send = (res, status, value, extraHeaders = {}) => {
   const origin = res.requestOrigin;
   const headers = {
@@ -176,27 +202,20 @@ function tokenUser(req) {
   return match;
 }
 function assertRole(user, role) { if (user.role !== role) throw fail(403, "FORBIDDEN", "You do not have permission to do that."); }
-const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-function courseInput(data, user, existingId = null) {
+function courseInput(data, existingId = null) {
   const existing = existingId ? db.courses.find((course) => course.id === existingId) : null;
   const name = String(data.name || "").trim();
   const code = String(data.code || "").trim().toUpperCase();
-  const startTime = String(data.startTime || "");
-  const endTime = String(data.endTime || "");
-  const qrTtlSeconds = Number(data.qrTtlSeconds ?? existing?.qrTtlSeconds ?? defaultQrTtlSeconds);
-  const days = [...new Set(Array.isArray(data.days) ? data.days : [])].filter((day) => weekdays.includes(day));
+  const qrTtlSeconds = Number(data.qrTtlSeconds ?? defaultQrTtlSeconds);
   const rawStudentIds = Array.isArray(data.studentIds) ? data.studentIds : (existing?.studentIds || []);
   const studentIds = [...new Set(rawStudentIds.map((id) => String(id).trim().toUpperCase()).filter(Boolean))];
-  const timeValid = (value) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
-  if (!name || name.length > 100 || !/^[A-Z0-9-]{2,20}$/.test(code) || !days.length || !timeValid(startTime) || !timeValid(endTime) || startTime >= endTime) {
-    throw fail(400, "INVALID_COURSE", "Enter a course name, code, at least one day, and a valid start and end time.");
+  if (!name || name.length > 100 || !/^[A-Z0-9-]{2,20}$/.test(code)) {
+    throw fail(400, "INVALID_COURSE", "Enter a valid course name and code.");
   }
-  if (!studentIds.length || studentIds.length > 500 || studentIds.some((id) => !studentIdPattern.test(id))) throw fail(400, "INVALID_ENROLLMENT", "Enter student roll numbers in YYBCSNNN, YYBDANNN, or YYBECNNN format.");
+  if (studentIds.length > 500 || studentIds.some((id) => !studentIdPattern.test(id))) throw fail(400, "INVALID_ENROLLMENT", "Enter student roll numbers in YYBCSNNN, YYBDANNN, or YYBECNNN format.");
   if (!Number.isInteger(qrTtlSeconds) || qrTtlSeconds < 5 || qrTtlSeconds > 120) throw fail(400, "INVALID_QR_INTERVAL", "Choose a QR rotation interval between 5 and 120 seconds.");
   if (studentIds.some((id) => !db.users.some((student) => student.role === "student" && student.studentId === id))) throw fail(400, "INVALID_ENROLLMENT", "Every enrolled student must have a provisioned student account.");
-  const collision = db.courses.some((course) => course.professorId === user.loginId && course.id !== existingId && course.days.some((day) => days.includes(day)) && startTime < course.endTime && endTime > course.startTime);
-  if (collision) throw fail(409, "SCHEDULE_CONFLICT", "This time overlaps another class on the selected day.");
-  return { name, code, days, startTime, endTime, qrTtlSeconds, beaconId: String(data.beaconId || `Room ${code}`).trim().slice(0, 60), students: studentIds.length, studentIds };
+  return { name, code, days: [], qrTtlSeconds, beaconId: existing?.beaconId || `Room ${code}`, students: studentIds.length, studentIds };
 }
 function sessionByCode(code) { const s = db.sessions.find((item) => item.code === code); if (!s) throw fail(404, "SESSION_NOT_FOUND", "Attendance session not found."); return s; }
 function ownedSessionByCode(code, user) {
@@ -211,8 +230,20 @@ function attendanceRoster(session, course) {
   return rosterIds.map((studentId) => {
     const student = db.users.find((user) => user.studentId === studentId);
     const record = db.attendance.find((item) => item.studentId === studentId && item.sessionId === session.code);
-    return { studentId, name: student?.name || studentId, present: Boolean(record), markedAt: record?.markedAt || null };
+    return { studentId, name: student?.name || studentId, present: record?.status === "present" || record?.status === "late", status: record?.status || "absent", note: record?.note || "", markedAt: record?.markedAt || null };
   });
+}
+function courseAttendanceStats(studentId, course) {
+  const sessions = db.sessions.filter((session) => session.courseId === course.id && session.status === "closed"
+    && (session.rosterStudentIds?.length ? session.rosterStudentIds : course.studentIds || []).includes(studentId));
+  const results = sessions.map((session) => db.attendance.find((record) => record.studentId === studentId && record.sessionId === session.code)?.status || "absent");
+  const countable = results.filter((status) => status !== "excused");
+  const attended = countable.filter((status) => status === "present" || status === "late").length;
+  const attendanceRate = countable.length ? Math.round(attended / countable.length * 100) : null;
+  return {
+    attendanceRate, sessionsHeld: countable.length, attendedSessions: attended,
+    excusedSessions: results.length - countable.length,
+  };
 }
 async function callFaceService(pathname, payload) {
   let response;
@@ -250,7 +281,7 @@ const server = createServer(async (req, res) => {
     if (method === "GET" && url.pathname === "/api/health") return send(res, 200, { status: "ok", rosterConfigured, accountsProvisioned: allUsers().length > 0 });
     if (method === "GET" && url.pathname === "/api/auth/status") return send(res, 200, {
       passwordLoginEnabled: true,
-      studentRegistrationEnabled: !production && rosterConfigured,
+      studentRegistrationEnabled: !production,
       professorRegistrationEnabled: !production && process.env.ALLOW_SELF_SERVICE_PROFESSOR_REGISTRATION === "true",
     });
     if (method === "POST" && url.pathname === "/api/auth/login") {
@@ -270,13 +301,64 @@ const server = createServer(async (req, res) => {
       const session = issueSession(user); await save();
       return send(res, 200, { ...session, user: safeUser(user) });
     }
+    if (method === "POST" && url.pathname === "/api/auth/password-reset/challenge") {
+      const data = await body(req);
+      const studentId = String(data.studentId || "").trim().toUpperCase();
+      if (!studentIdPattern.test(studentId)) throw fail(400, "INVALID_STUDENT_ID", "Enter a roll number in YYBCSNNN, YYBDANNN, or YYBECNNN format.");
+      const rateKey = loginFailureKey(`password-reset:${studentId}`);
+      checkLoginRateLimit(rateKey);
+      for (const [id, challenge] of passwordResetChallenges) {
+        if (challenge.expiresAt <= Date.now()) passwordResetChallenges.delete(id);
+      }
+      while (passwordResetChallenges.size >= 1000) passwordResetChallenges.delete(passwordResetChallenges.keys().next().value);
+      const challengeId = randomBytes(24).toString("hex");
+      const challenge = { challengeId, studentId, promptFrame: randomInt(8, 12), expiresAt: Date.now() + 120_000, rateKey };
+      passwordResetChallenges.set(challengeId, challenge);
+      return send(res, 200, { challengeId, promptFrame: challenge.promptFrame, expiresAt: new Date(challenge.expiresAt).toISOString() });
+    }
+    if (method === "POST" && url.pathname === "/api/auth/password-reset/complete") {
+      const data = await body(req);
+      const challengeId = String(data.challengeId || "");
+      const challenge = passwordResetChallenges.get(challengeId);
+      if (!challenge) throw fail(400, "PASSWORD_RESET_CHALLENGE_INVALID", "Start password recovery again to get a new face check.");
+      passwordResetChallenges.delete(challengeId);
+      if (challenge.expiresAt <= Date.now()) throw fail(400, "PASSWORD_RESET_CHALLENGE_EXPIRED", "The face check expired. Start password recovery again.");
+      const newPassword = String(data.newPassword || "");
+      if (newPassword.length < 8 || newPassword.length > 128) throw fail(400, "INVALID_PASSWORD", "Choose a password between 8 and 128 characters.");
+      checkLoginRateLimit(challenge.rateKey);
+      if (!Array.isArray(data.frames) || data.frames.length < 10 || data.frames.length > 42 || data.frames.some((frame) => typeof frame !== "string" || !frame.startsWith("data:image/jpeg;base64,") || frame.length > 400_000)) {
+        throw fail(400, "INVALID_FACE_FRAMES", "The camera capture was incomplete. Please try face verification again.");
+      }
+      let faceResult;
+      try {
+        faceResult = await callFaceService("/verify", { studentId: challenge.studentId, frames: data.frames, promptFrame: challenge.promptFrame });
+      } catch (verificationError) {
+        recordLoginFailure(challenge.rateKey);
+        if (verificationError.status === 422) {
+          throw fail(422, "FACE_CHECK_UNCLEAR", "We couldn't read the face check. Keep one face centered, keep your eyes open until prompted, then blink once and remain still.");
+        }
+        if (verificationError.status === 503) {
+          throw fail(503, "FACE_SERVICE_UNAVAILABLE", "Face verification is temporarily unavailable. Try again shortly.");
+        }
+        throw fail(403, "PASSWORD_RESET_VERIFICATION_FAILED", "We could not verify that account. Check the roll number and registered face, then try again.");
+      }
+      const student = db.users.find((item) => item.role === "student" && item.studentId === challenge.studentId);
+      if (!student || faceResult.verified !== true || faceResult.blinkVerified !== true) {
+        recordLoginFailure(challenge.rateKey);
+        throw fail(403, "PASSWORD_RESET_VERIFICATION_FAILED", "We could not verify that account. Check the roll number and registered face, then try again.");
+      }
+      student.passwordHash = hashPassword(newPassword);
+      student.tokens = [];
+      loginFailureWindows.delete(challenge.rateKey);
+      await save();
+      return send(res, 200, { passwordReset: true });
+    }
     if (method === "POST" && url.pathname === "/api/auth/register") {
       const { rollNumber, name, password, faceImage } = await body(req);
       const loginId = String(rollNumber || "").trim().toUpperCase();
       if (!studentIdPattern.test(loginId) || !name?.trim() || typeof password !== "string" || password.length < 8 || password.length > 128) throw fail(400, "INVALID_REGISTRATION", "Enter a roll number in YYBCSNNN, YYBDANNN, or YYBECNNN format, a name, and a password between 8 and 128 characters.");
       if (production) throw fail(403, "STUDENT_PROVISIONING_REQUIRED", "Student accounts must be provisioned after institutional identity verification.");
-      if (!rosterConfigured) throw fail(503, "ROSTER_NOT_CONFIGURED", "Student registration is unavailable until the institutional roster is configured.");
-      if (!isOnStudentRoster(loginId)) throw fail(403, "NOT_ON_ROSTER", "This roll number is not eligible for student registration. Contact your administrator if this is an error.");
+      if (rosterConfigured && !isOnStudentRoster(loginId)) throw fail(403, "NOT_ON_ROSTER", "This roll number is not eligible for student registration. Contact your administrator if this is an error.");
       if (allUsers().some((u) => u.loginId === loginId)) throw fail(409, "USER_EXISTS", "This student account already exists. Sign in instead.");
       if (!String(faceImage || "").startsWith("data:image/")) throw fail(400, "FACE_IMAGE_REQUIRED", "Capture a face image to enroll your student account.");
       await callFaceService("/enroll", { studentId: loginId, image: faceImage });
@@ -337,14 +419,18 @@ const server = createServer(async (req, res) => {
           return {
             sessionId: session.code, courseId: course.id, courseName: course.name, courseCode: course.code,
             status: session.status, createdAt: session.createdAt, closedAt: session.closedAt || null,
-            totalCount: roster.length, presentCount: roster.filter((student) => student.present).length,
+            totalCount: roster.length,
+            presentCount: roster.filter((student) => student.status === "present").length,
+            lateCount: roster.filter((student) => student.status === "late").length,
+            excusedCount: roster.filter((student) => student.status === "excused").length,
+            absentCount: roster.filter((student) => student.status === "absent").length,
           };
         })
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
       return send(res, 200, { sessions });
     }
     if (method === "POST" && url.pathname === "/api/teacher/courses") {
-      assertRole(user, "professor"); const data = await body(req); const course = { id: randomUUID(), professorId: user.loginId, ...courseInput(data, user), createdAt: now() };
+      assertRole(user, "professor"); const data = await body(req); const course = { id: randomUUID(), professorId: user.loginId, ...courseInput(data), createdAt: now() };
       db.courses.push(course); await save(); return send(res, 201, { course });
     }
     let courseMatch = url.pathname.match(/^\/api\/teacher\/courses\/([^/]+)$/);
@@ -354,7 +440,7 @@ const server = createServer(async (req, res) => {
       if (!course) throw fail(404, "COURSE_NOT_FOUND", "Class not found in your schedule.");
       if (method === "PUT") {
         if (db.sessions.some((s) => s.courseId === id && s.status === "open")) throw fail(409, "SESSION_OPEN", "Close the live attendance session before editing this class.");
-        Object.assign(course, courseInput(await body(req), user, id)); await save(); return send(res, 200, { course });
+        Object.assign(course, courseInput(await body(req), id)); await save(); return send(res, 200, { course });
       }
       if (method === "DELETE") {
         if (db.sessions.some((s) => s.courseId === id && s.status === "open")) throw fail(409, "SESSION_OPEN", "Close the live attendance session before removing this class.");
@@ -376,16 +462,24 @@ const server = createServer(async (req, res) => {
     }
     if (method === "GET" && url.pathname === "/api/student/dashboard") {
       assertRole(user, "student");
-      const today = db.attendance.filter((a) => a.studentId === user.studentId && a.date === new Date().toISOString().slice(0, 10));
-      const list = db.courses.filter((course) => (course.studentIds || []).includes(user.studentId)).map((c) => {
+      const history = studentAttendanceHistory(user.studentId);
+      const today = db.attendance.filter((a) => a.studentId === user.studentId && a.date === new Date().toISOString().slice(0, 10) && (a.status === "present" || a.status === "late"));
+      const courses = db.courses.filter((course) => (course.studentIds || []).includes(user.studentId)).map((c) => {
+        const attendanceStats = courseAttendanceStats(user.studentId, c);
         const session = db.sessions.find((s) => s.courseId === c.id && s.status === "open");
         const marked = today.some((a) => a.courseId === c.id);
         const professor = allUsers().find((u) => u.loginId === c.professorId);
-        return { courseId: c.id, name: c.name, code: c.code, days: c.days, timeLabel: `${c.startTime} - ${c.endTime}`, beaconId: c.beaconId, professorName: professor?.name || c.professorId, professorId: c.professorId, activeSessionCode: session?.code || null, marked, canMarkAttendance: Boolean(session && !marked) };
+        return { courseId: c.id, name: c.name, code: c.code, professorName: professor?.name || c.professorId, professorId: c.professorId, activeSessionCode: session?.code || null, marked, canMarkAttendance: Boolean(session && !marked), ...attendanceStats };
       });
-      const todayName = new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(new Date());
-      const todaysClasses = list.filter((course) => course.days.includes(todayName));
-      return send(res, 200, { student: safeUser(user), summary: { overallAttendance: db.attendance.filter((a) => a.studentId === user.studentId).length ? 100 : 0, classesToday: todaysClasses.length, presentToday: today.length }, classes: list });
+      const activeClasses = courses.filter((course) => course.activeSessionCode);
+      const completedSessions = history.length;
+      const countableSessions = history.filter((entry) => entry.status !== "excused").length;
+      const attendedSessions = history.filter((entry) => entry.status === "present" || entry.status === "late").length;
+      return send(res, 200, { student: safeUser(user), summary: { overallAttendance: countableSessions ? Math.round((attendedSessions / countableSessions) * 100) : 0, activeSessions: activeClasses.length, presentToday: today.length }, classes: activeClasses, courses });
+    }
+    if (method === "GET" && url.pathname === "/api/student/attendance-history") {
+      assertRole(user, "student");
+      return send(res, 200, { history: studentAttendanceHistory(user.studentId) });
     }
     if (method === "POST" && url.pathname === "/api/sessions") {
       assertRole(user, "professor"); const data = await body(req); const course = db.courses.find((c) => c.id === data.courseId && c.professorId === user.loginId);
@@ -393,6 +487,36 @@ const server = createServer(async (req, res) => {
       if (db.sessions.some((s) => s.courseId === course.id && s.status === "open")) throw fail(409, "SESSION_ALREADY_OPEN", "This course already has an open session.");
       const session = { code: randomBytes(5).toString("hex").toUpperCase(), courseId: course.id, beaconId: data.beaconId || course.beaconId, status: "open", createdAt: now(), qr: null, rosterStudentIds: [...(course.studentIds || [])] };
       db.sessions.push(session); await save(); return send(res, 201, { code: session.code });
+    }
+    let statusMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/attendance\/([^/]+)$/);
+    if (statusMatch && method === "PATCH") {
+      assertRole(user, "professor");
+      const session = ownedSessionByCode(decodeURIComponent(statusMatch[1]), user);
+      if (session.status !== "open") throw fail(409, "SESSION_CLOSED", "Attendance statuses can only be updated while the session is open.");
+      const studentId = decodeURIComponent(statusMatch[2]).toUpperCase();
+      const student = db.users.find((item) => item.role === "student" && item.studentId === studentId);
+      if (!student) throw fail(404, "STUDENT_NOT_FOUND", "No registered student account was found for that roll number.");
+      const data = await body(req);
+      const status = String(data.status || "").toLowerCase();
+      if (!["present", "absent", "late", "excused"].includes(status)) throw fail(400, "INVALID_ATTENDANCE_STATUS", "Choose present or absent.");
+      const note = String(data.note || "").trim();
+      if (["late", "excused"].includes(status) && !note) throw fail(400, "ATTENDANCE_NOTE_REQUIRED", "Add a note when marking a student late or excused.");
+      if (note.length > 500) throw fail(400, "ATTENDANCE_NOTE_TOO_LONG", "Attendance notes must be 500 characters or fewer.");
+      const course = db.courses.find((item) => item.id === session.courseId);
+      const sessionRoster = session.rosterStudentIds?.length ? session.rosterStudentIds : course.studentIds || [];
+      if (status !== "present" && !sessionRoster.includes(studentId)) throw fail(404, "STUDENT_NOT_IN_SESSION", "Student is not on this session roster.");
+      const markedAt = now();
+      const date = String(session.createdAt || markedAt).slice(0, 10);
+      if (!session.rosterStudentIds?.length) session.rosterStudentIds = [...(course.studentIds || [])];
+      if (!session.rosterStudentIds.includes(studentId)) session.rosterStudentIds.push(studentId);
+      setAttendanceStatus({ studentId, courseId: course.id, sessionId: session.code, markedAt, date, status, note });
+      const existing = db.attendance.find((record) => record.studentId === studentId && record.sessionId === session.code);
+      if (status === "absent") {
+        db.attendance = db.attendance.filter((record) => record.studentId !== studentId || record.sessionId !== session.code);
+      } else if (existing) Object.assign(existing, { status, markedAt, date, note, verifiedSteps: existing.verifiedSteps || [] });
+      else db.attendance.push({ studentId, courseId: course.id, sessionId: session.code, markedAt, date, status, note, verifiedSteps: [] });
+      await save();
+      return send(res, 200, { studentId, name: student.name, status, note, markedAt });
     }
     let match = url.pathname.match(/^\/api\/sessions\/([^/]+)\/(qr|attendance|close)$/);
     if (match) {
@@ -437,7 +561,7 @@ const server = createServer(async (req, res) => {
         if (!attempt.factors.qr) throw fail(409, "QR_REQUIRED", "Scan the professor's current QR code before face verification.");
         if (attempt.completedAt) throw fail(409, "ATTEMPT_COMPLETED", "Attendance has already been recorded for this attempt.");
         if (attempt.factors.face) return send(res, 200, { verified: true, alreadyVerified: true });
-        const challenge = { challengeId: randomBytes(16).toString("hex"), promptFrame: randomInt(4, 7), expiresAt: Date.now() + 90_000 };
+        const challenge = { challengeId: randomBytes(16).toString("hex"), promptFrame: randomInt(8, 12), expiresAt: Date.now() + 90_000 };
         attempt.challenge = challenge; await save();
         return send(res, 200, { challengeId: challenge.challengeId, promptFrame: challenge.promptFrame, expiresAt: new Date(challenge.expiresAt).toISOString() });
       }
@@ -448,7 +572,7 @@ const server = createServer(async (req, res) => {
         if (attempt.completedAt) throw fail(409, "ATTEMPT_COMPLETED", "Attendance has already been recorded for this attempt.");
         const challenge = attempt.challenge;
         if (!challenge || challenge.expiresAt <= Date.now() || data.challengeId !== challenge.challengeId) throw fail(400, "BLINK_CHALLENGE_INVALID", "The blink check expired. Restart attendance and try again.");
-        if (!Array.isArray(data.frames) || data.frames.length < 10 || data.frames.length > 16 || data.frames.some((frame) => typeof frame !== "string" || !frame.startsWith("data:image/jpeg;base64,") || frame.length > 400_000)) throw fail(400, "INVALID_FACE_FRAMES", "The camera capture was incomplete. Please try face verification again.");
+        if (!Array.isArray(data.frames) || data.frames.length < 10 || data.frames.length > 42 || data.frames.some((frame) => typeof frame !== "string" || !frame.startsWith("data:image/jpeg;base64,") || frame.length > 400_000)) throw fail(400, "INVALID_FACE_FRAMES", "The camera capture was incomplete. Please try face verification again.");
         const result = await callFaceService("/verify", { studentId: user.studentId, frames: data.frames, promptFrame: challenge.promptFrame });
         if (result.blinkVerified !== true) throw fail(403, "BLINK_NOT_DETECTED", "Blink once when prompted, then try again.");
         if (result.verified !== true) throw fail(403, "FACE_MISMATCH", "The face does not match the enrolled account.");

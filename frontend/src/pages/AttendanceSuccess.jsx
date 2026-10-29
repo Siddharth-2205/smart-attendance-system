@@ -1,9 +1,43 @@
 import "../styles/attendance-success.css";
+import Confetti from "../components/Confetti";
+import { useEffect, useRef } from "react";
 
 function AttendanceSuccess({ attendance, onReturn }) {
+  const confettiRef = useRef(null);
+
+  useEffect(() => {
+    if (!attendance?.markedAt || attendance.status !== "present") return undefined;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return undefined;
+
+    let secondBurst;
+    let thirdBurst;
+    const firstFrame = window.requestAnimationFrame(() => {
+      void confettiRef.current?.fire();
+      secondBurst = window.setTimeout(() => {
+        void confettiRef.current?.fire({ particleCount: 90, spread: 105, startVelocity: 34, origin: { x: 0.18, y: 0.72 } });
+      }, 220);
+      thirdBurst = window.setTimeout(() => {
+        void confettiRef.current?.fire({ particleCount: 90, spread: 105, startVelocity: 34, origin: { x: 0.82, y: 0.72 } });
+      }, 440);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.clearTimeout(secondBurst);
+      window.clearTimeout(thirdBurst);
+    };
+  }, [attendance?.markedAt, attendance?.status]);
+
   if (!attendance?.markedAt || attendance.status !== "present") return null;
   return (
     <main className="success-page">
+      <Confetti
+        ref={confettiRef}
+        className="success-confetti-canvas"
+        aria-hidden="true"
+        options={{ particleCount: 120, spread: 76, startVelocity: 38, origin: { y: 0.62 } }}
+        manualstart
+      />
       <section className="success-card">
         <p className="success-step">STEP 4 OF 4 · ATTENDANCE SUCCESS</p>
 

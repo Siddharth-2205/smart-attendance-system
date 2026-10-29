@@ -23,6 +23,41 @@
   width: 100%;
   max-width: 1100px;
   margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.student-dashboard-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 44px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.student-dashboard-footer button {
+  min-width: 132px;
+  padding: 11px 18px;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 9px;
+  background: rgba(127, 29, 29, 0.16);
+  color: #fecaca;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.student-dashboard-footer button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(248, 113, 113, 0.6);
+  background: rgba(127, 29, 29, 0.28);
+}
+
+.student-dashboard-footer button:focus-visible {
+  outline: 2px solid #fca5a5;
+  outline-offset: 3px;
 }
 
 
@@ -231,6 +266,80 @@
    TODAY'S CLASSES
 ======================================== */
 
+.history-section {
+  order: 3;
+  margin: 0 0 42px;
+}
+
+.history-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.history-section h2 {
+  margin-bottom: 14px;
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.history-total {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  background: rgba(15, 23, 42, 0.68);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.history-course {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.history-course strong { color: var(--text-primary); font-size: 14px; }
+.history-course span, .history-empty { color: var(--text-secondary); font-size: 13px; }
+
+.history-status {
+  padding: 6px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.history-status.present { color: #86efac; background: rgba(34, 197, 94, 0.12); }
+.history-status.late { color: #fcd34d; background: rgba(245, 158, 11, 0.14); }
+.history-status.excused { color: #c4b5fd; background: rgba(139, 92, 246, 0.15); }
+.history-status.absent { color: #fca5a5; background: rgba(239, 68, 68, 0.12); }
+.history-result { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+.history-note { max-width: 280px; color: var(--text-secondary); font-size: 12px; text-align: right; overflow-wrap: anywhere; }
+.history-empty { padding: 18px 20px; background: rgba(15, 23, 42, 0.5); border: 1px solid var(--border); border-radius: var(--radius-md); }
+
+.classes-section {
+  order: 2;
+}
+
 .classes-section h2 {
   margin-bottom: 18px;
 
@@ -381,6 +490,9 @@
 
     flex-direction: column;
   }
+
+  .history-heading-row { flex-direction: column; }
+  .history-row { padding: 15px; }
 
   .class-card button {
     width: 100%;
