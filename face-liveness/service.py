@@ -9,6 +9,7 @@ import math
 import os
 import statistics
 import sqlite3
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -93,7 +94,7 @@ def decrypt_template(student_id: str, encrypted: bytes) -> np.ndarray:
     return np.asarray(json.loads(decoded), dtype=np.float64)
 
 
-def image_array(data_url: str) -> np.ndarray:
+def image_array(data_url: str, max_size: int = 640) -> np.ndarray:
     try:
         encoded = data_url.split(",", 1)[1] if "," in data_url else data_url
         raw = base64.b64decode(encoded, validate=True)
@@ -101,7 +102,7 @@ def image_array(data_url: str) -> np.ndarray:
             raise HTTPException(status_code=413, detail="Image is too large.")
         with Image.open(io.BytesIO(raw)) as image:
             image = image.convert("RGB")
-            image.thumbnail((640, 640))
+            image.thumbnail((max_size, max_size))
             return np.asarray(image)
     except (IndexError, binascii.Error, UnidentifiedImageError, OSError, ValueError):
         raise HTTPException(status_code=400, detail="A valid image is required.") from None
@@ -129,7 +130,9 @@ def eye_aspect_ratio(points: list[tuple[int, int]]) -> float:
 
 
 def frame_eyes(data_url: str):
-    image = image_array(data_url)
+    # Blink detection needs landmarks, not full-resolution identity detail.
+    # Keep identity frames at the larger resolution when comparing below.
+    image = image_array(data_url, max_size=420)
     locations = face_recognition.face_locations(image, model="hog")
     if len(locations) != 1:
         return None
@@ -168,6 +171,7 @@ def enroll(request: Enrollment, _auth: None = Depends(require_backend)):
 
 @app.post("/verify")
 def verify(request: Verification, _auth: None = Depends(require_backend)):
+    started = time.perf_counter()
     with closing(connect()) as connection:
         row = connection.execute("SELECT encoding FROM face_templates WHERE student_id=?", (request.studentId,)).fetchone()
     if not row:
@@ -175,6 +179,10 @@ def verify(request: Verification, _auth: None = Depends(require_backend)):
     enrolled = decrypt_template(request.studentId, row[0])
     measurements = []
     for index, frame in enumerate(request.frames):
+        # Adjacent camera frames are nearly identical. Sampling every other
+        # frame keeps blink timing while roughly halving dlib landmark work.
+        if index % 2:
+            continue
         try:
             result = frame_eyes(frame)
         except HTTPException:
@@ -210,8 +218,9 @@ def verify(request: Verification, _auth: None = Depends(require_backend)):
         if saw_closed:
             fail(422, "Blink detected. Keep both eyes open after the prompt and try again.")
         fail(422, "Blink not detected. Close both eyes naturally once when the prompt appears.")
+    landmark_seconds = time.perf_counter() - started
     distances = []
-    for image, location in candidates[:7]:
+    for image, location in candidates[:5]:
         encodings = face_recognition.face_encodings(image, known_face_locations=[location], num_jitters=1)
         if len(encodings) == 1:
             distances.append(float(face_recognition.face_distance([enrolled], encodings[0])[0]))
@@ -221,6 +230,13 @@ def verify(request: Verification, _auth: None = Depends(require_backend)):
     matching_frames = sum(distance <= 0.50 for distance in distances)
     if median_distance > 0.50 or matching_frames < 3:
         fail(403, "The face does not match the student enrollment.")
+    print(
+        "Face verification completed: "
+        f"{len(request.frames)} frames, {len(measurements)} sampled, "
+        f"landmarks {landmark_seconds:.2f}s, "
+        f"total {time.perf_counter() - started:.2f}s",
+        flush=True,
+    )
     return {"verified": True, "blinkVerified": True}
 
 

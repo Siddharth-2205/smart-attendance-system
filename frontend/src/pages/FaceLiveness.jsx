@@ -126,24 +126,25 @@ function FaceLiveness({ className, attemptId, onVerified }) {
       const video = videoRef.current;
       if (!video || video.readyState < 2) throw new Error("Camera is not ready. Please try again.");
       const canvas = canvasRef.current;
-      const width = Math.min(video.videoWidth, 480);
+      const width = Math.min(video.videoWidth, 400);
       if (!width || !video.videoHeight) throw new Error("Camera is not ready. Please try again.");
       const height = Math.round((video.videoHeight / video.videoWidth) * width);
       canvas.width = width;
       canvas.height = height;
       const context = canvas.getContext("2d");
       const frames = [];
-      // A longer sample gives a natural blink more time to occur and leaves
-      // several clear post-blink frames for a stable identity comparison.
-      for (let index = 0; index < 42; index += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 70));
+      // Capture a short sequence. The server samples every other frame and
+      // compares three post-blink images, so extra adjacent frames add latency
+      // and upload size without improving the check.
+      for (let index = 0; index < 40; index += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 60));
         if (index >= challenge.promptFrame) setVerificationStage("blink");
         context.save();
         context.translate(width, 0);
         context.scale(-1, 1);
         context.drawImage(video, 0, 0, width, height);
         context.restore();
-        frames.push(canvas.toDataURL("image/jpeg", 0.55));
+        frames.push(canvas.toDataURL("image/jpeg", 0.5));
       }
       setVerificationStage("checking");
       await api(`/api/attendance/attempts/${attemptId}/face`, {
