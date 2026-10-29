@@ -50,7 +50,7 @@ class Enrollment(BaseModel):
 class Verification(BaseModel):
     studentId: str = Field(min_length=1, max_length=32)
     frames: list[str] = Field(min_length=10, max_length=42)
-    promptFrame: int = Field(ge=8, le=11)
+    promptFrame: int = Field(ge=4, le=5)
 
 
 def connect() -> sqlite3.Connection:
@@ -130,9 +130,8 @@ def eye_aspect_ratio(points: list[tuple[int, int]]) -> float:
 
 
 def frame_eyes(data_url: str):
-    # Blink detection needs landmarks, not full-resolution identity detail.
-    # Keep identity frames at the larger resolution when comparing below.
-    image = image_array(data_url, max_size=420)
+    # Keep the sampled camera frame at full capture resolution for identity matching.
+    image = image_array(data_url, max_size=480)
     locations = face_recognition.face_locations(image, model="hog")
     if len(locations) != 1:
         return None
@@ -179,10 +178,6 @@ def verify(request: Verification, _auth: None = Depends(require_backend)):
     enrolled = decrypt_template(request.studentId, row[0])
     measurements = []
     for index, frame in enumerate(request.frames):
-        # Adjacent camera frames are nearly identical. Sampling every other
-        # frame keeps blink timing while roughly halving dlib landmark work.
-        if index % 2:
-            continue
         try:
             result = frame_eyes(frame)
         except HTTPException:
@@ -199,7 +194,7 @@ def verify(request: Verification, _auth: None = Depends(require_backend)):
 
     saw_closed = False
     candidates = []
-    last_candidate_index = -4
+    last_candidate_index = -2
     for index, result in measurements:
         if index < request.promptFrame or result is None:
             continue
@@ -210,7 +205,7 @@ def verify(request: Verification, _auth: None = Depends(require_backend)):
         closed_eyes = (left_ratio + right_ratio) / 2 <= 0.78
         if closed_eyes:
             saw_closed = True
-        elif saw_closed and open_eyes and index - last_candidate_index >= 4:
+        elif saw_closed and open_eyes and index - last_candidate_index >= 2:
             candidates.append((image, location))
             last_candidate_index = index
 

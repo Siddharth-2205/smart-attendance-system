@@ -335,7 +335,9 @@ const server = createServer(async (req, res) => {
       }
       while (passwordResetChallenges.size >= 1000) passwordResetChallenges.delete(passwordResetChallenges.keys().next().value);
       const challengeId = randomBytes(24).toString("hex");
-      const challenge = { challengeId, studentId, promptFrame: randomInt(8, 12), expiresAt: Date.now() + 120_000, rateKey };
+      // Frames are sampled at half the camera rate, so use the corresponding
+      // prompt index in the submitted sequence.
+      const challenge = { challengeId, studentId, promptFrame: randomInt(4, 6), expiresAt: Date.now() + 120_000, rateKey };
       passwordResetChallenges.set(challengeId, challenge);
       return send(res, 200, { challengeId, promptFrame: challenge.promptFrame, expiresAt: new Date(challenge.expiresAt).toISOString() });
     }
@@ -584,7 +586,7 @@ const server = createServer(async (req, res) => {
         if (!attempt.factors.qr) throw fail(409, "QR_REQUIRED", "Scan the professor's current QR code before face verification.");
         if (attempt.completedAt) throw fail(409, "ATTEMPT_COMPLETED", "Attendance has already been recorded for this attempt.");
         if (attempt.factors.face) return send(res, 200, { verified: true, alreadyVerified: true });
-        const challenge = { challengeId: randomBytes(16).toString("hex"), promptFrame: randomInt(8, 12), expiresAt: Date.now() + 90_000 };
+        const challenge = { challengeId: randomBytes(16).toString("hex"), promptFrame: randomInt(4, 6), expiresAt: Date.now() + 90_000 };
         attempt.challenge = challenge; await save();
         return send(res, 200, { challengeId: challenge.challengeId, promptFrame: challenge.promptFrame, expiresAt: new Date(challenge.expiresAt).toISOString() });
       }
