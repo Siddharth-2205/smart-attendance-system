@@ -246,19 +246,42 @@ function courseAttendanceStats(studentId, course) {
   };
 }
 async function callFaceService(pathname, payload) {
+  const request = {
+    method: payload === undefined ? "GET" : "POST",
+    headers: { "Content-Type": "application/json", ...(faceServiceToken ? { Authorization: `Bearer ${faceServiceToken}` } : {}) },
+    ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+  };
   let response;
-  try {
-    response = await fetch(`${faceServiceUrl}${pathname}`, {
-      method: payload === undefined ? "GET" : "POST",
-      headers: { "Content-Type": "application/json", ...(faceServiceToken ? { Authorization: `Bearer ${faceServiceToken}` } : {}) },
-      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
-      signal: AbortSignal.timeout(60_000),
-    });
-  } catch {
-    throw fail(503, "FACE_SERVICE_UNAVAILABLE", "Face verification service is unavailable.");
+  let lastError;
+  // Render free services may be asleep when the first request arrives. Retry
+  // transient gateway/network failures once so a cold start can finish.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      response = await fetch(`${faceServiceUrl}${pathname}`, {
+        ...request,
+        signal: AbortSignal.timeout(90_000),
+      });
+      if (![502, 503, 504].includes(response.status) || attempt === 1) break;
+      console.warn(`Face service returned HTTP ${response.status} for ${pathname}; retrying once.`);
+    } catch (error) {
+      lastError = error;
+      if (attempt === 1) {
+        console.error(`Face service request failed for ${pathname}: ${error.name || "network error"}`);
+        throw fail(503, "FACE_SERVICE_UNAVAILABLE", "Face verification service is unavailable. Wait a moment and try again.");
+      }
+      console.warn(`Face service request failed for ${pathname}; retrying once after a possible cold start.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  if (!response) {
+    console.error(`Face service request failed for ${pathname}: ${lastError?.name || "network error"}`);
+    throw fail(503, "FACE_SERVICE_UNAVAILABLE", "Face verification service is unavailable. Wait a moment and try again.");
   }
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw fail(response.status >= 500 ? 503 : response.status, result.code || "FACE_VERIFICATION_FAILED", result.message || result.detail || "Face verification failed.");
+  if (!response.ok) {
+    console.error(`Face service returned HTTP ${response.status} for ${pathname}${result.detail ? `: ${result.detail}` : "."}`);
+    throw fail(response.status >= 500 ? 503 : response.status, result.code || "FACE_VERIFICATION_FAILED", result.message || result.detail || "Face verification failed.");
+  }
   return result;
 }
 function activeQr(session) {
