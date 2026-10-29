@@ -17,8 +17,8 @@ services:
         value: 0.0.0.0
       - key: STUDENT_ROSTER
         value: 23BCS001,23BCS002,23BCS003,23BCS004,23BCS005
-      - key: CORS_ORIGINS
-        value: https://smart-attendance-demo.onrender.com
+      - - key: CORS_ORIGINS
+        value: https://smart-attendance-demo-qrmf.onrender.com
       - key: ALLOW_SELF_SERVICE_PROFESSOR_REGISTRATION
         value: "false"
       - key: FACE_SERVICE_URL
