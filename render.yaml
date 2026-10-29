@@ -5,7 +5,7 @@ services:
     rootDir: backend
     plan: free
     region: singapore
-    buildCommand: npm ci
+    buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
