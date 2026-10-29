@@ -1,3 +1,4 @@
+```yaml
 services:
   - type: web
     name: smart-attendance-demo-api
@@ -10,14 +11,14 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
-        value: 24.16.0
+        value: "24.16.0"
       - key: NODE_ENV
         value: development
       - key: HOST
         value: 0.0.0.0
       - key: STUDENT_ROSTER
         value: "23BCS001,23BCS002,23BCS003,23BCS004,23BCS005"
-      - - key: CORS_ORIGINS
+      - key: CORS_ORIGINS
         value: https://smart-attendance-demo-qrmf.onrender.com
       - key: ALLOW_SELF_SERVICE_PROFESSOR_REGISTRATION
         value: "false"
@@ -56,9 +57,10 @@ services:
     staticPublishPath: dist
     envVars:
       - key: NODE_VERSION
-        value: 24.16.0
+        value: "24.16.0"
       - key: VITE_API_URL
         fromService:
           name: smart-attendance-demo-api
           type: web
           envVarKey: RENDER_EXTERNAL_URL
+```
