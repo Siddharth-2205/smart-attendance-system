@@ -1,4 +1,5 @@
 services:
+  # Node.js backend API
   - type: web
     name: smart-attendance-demo-api
     runtime: node
@@ -11,27 +12,40 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "24.16.0"
+
       - key: NODE_ENV
         value: development
+
       - key: HOST
         value: 0.0.0.0
+
+      # Development registration range for students
       - key: STUDENT_ROSTER_RANGE
         value: "001-300"
+
+      # Allow requests from the deployed frontend
       - key: CORS_ORIGINS
         value: https://smart-attendance-demo-qrmf.onrender.com
+
+      # ENABLE PROFESSOR SELF-REGISTRATION
       - key: ALLOW_SELF_SERVICE_PROFESSOR_REGISTRATION
-        value: "false"
+        value: "true"
+
+      # Face verification service URL
       - key: FACE_SERVICE_URL
         fromService:
           name: smart-attendance-demo-face
           type: web
           envVarKey: RENDER_EXTERNAL_URL
+
+      # Shared authentication token for the face service
       - key: FACE_SERVICE_TOKEN
         fromService:
           name: smart-attendance-demo-face
           type: web
           envVarKey: FACE_SERVICE_TOKEN
 
+  # Face verification service
   - type: web
     name: smart-attendance-demo-face
     runtime: docker
@@ -43,11 +57,14 @@ services:
     envVars:
       - key: FACE_TEMPLATE_KEY
         generateValue: true
+
       - key: FACE_SERVICE_TOKEN
         generateValue: true
+
       - key: FACE_DATA_DIR
         value: /var/data
 
+  # React frontend
   - type: web
     name: smart-attendance-demo
     runtime: static
@@ -57,6 +74,7 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "24.16.0"
+
       - key: VITE_API_URL
         fromService:
           name: smart-attendance-demo-api
